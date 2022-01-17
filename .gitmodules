@@ -1,0 +1,9 @@
+[submodule "sokol"]
+	path = sokol
+	url = git@github.com:floooh/sokol.git
+[submodule "sokol-tools-bin"]
+	path = sokol-tools-bin
+	url = git@github.com:floooh/sokol-tools-bin.git
+[submodule "stb"]
+	path = stb
+	url = git@github.com:nothings/stb.git
