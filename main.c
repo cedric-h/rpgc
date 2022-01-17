@@ -17,29 +17,42 @@
 #include "build/shaders.glsl.h"
 #include "sokol/util/sokol_color.h"
 
+typedef struct { float x, y, z, color; } Vert;
+typedef struct {
+    Vert *verts;
+    int vert_bytes;
+    uint16_t *idxs;
+    int idx_bytes;
+} Geo;
+static Geo malloc_geo(int vert_n, int idx_n) {
+    return (Geo) {
+        .verts = calloc(sizeof(Vert), vert_n),
+        .vert_bytes =   sizeof(Vert) * vert_n,
+        .idxs = calloc(sizeof(uint16_t), idx_n),
+        .idx_bytes =   sizeof(uint16_t) * idx_n,
+    };
+}
+
 /* application state */
 static struct {
+    Geo dyn_geo;
     sg_pipeline pip;
     sg_bindings bind;
     sg_pass_action pass_action;
 } state;
 
 static void init(void) {
+    state.dyn_geo = malloc_geo(1 << 10, 1 << 11);
+
     sg_setup(&(sg_desc){
         .context = sapp_sgcontext()
     });
 
     /* a vertex buffer with 3 vertices */
-    float vertices[] = {
-        // positions            // colors
-        -0.5f, 0.0f, 0.5f,     2.0f,
-         0.5f, 0.0f, 0.5f,     2.0f,
-         0.5f, 1.0f, 0.5f,     2.0f,
-        -0.5f, 1.0f, 0.5f,     2.0f,
-    };
     state.bind.vertex_buffers[0] = sg_make_buffer(&(sg_buffer_desc){
-        .data = SG_RANGE(vertices),
-        .label = "static-vertices"
+        .size = state.dyn_geo.vert_bytes,
+        .usage = SG_USAGE_STREAM,
+        .label = "stream-vertices"
     });
 
     /* an index buffer with 2 triangles */
@@ -97,7 +110,24 @@ static void init(void) {
     };
 }
 
-void frame(void) {
+static void frame(void) {
+    Vert vertices[] = {
+        // positions            // colors
+        { -0.5f, 0.0f, 0.5f,     2.0f, },
+        {  0.5f, 0.0f, 0.5f,     2.0f, },
+        {  0.5f, 1.0f, 0.5f,     2.0f, },
+        { -0.5f, 1.0f, 0.5f,     2.0f, },
+    };
+    for (int i = 0; i < sizeof(vertices) / sizeof(Vert); i++)
+        vertices[i].x *=                           1.0f / 11.8f,
+        vertices[i].y *= sapp_widthf() / sapp_heightf() / 11.8f;
+    memcpy(state.dyn_geo.verts, vertices, sizeof(vertices));
+
+    sg_update_buffer(state.bind.vertex_buffers[0], &(sg_range) {
+        .ptr = state.dyn_geo.verts,
+        .size = state.dyn_geo.vert_bytes,
+    });
+
     sg_begin_default_pass(&state.pass_action, sapp_width(), sapp_height());
     sg_apply_pipeline(state.pip);
     sg_apply_bindings(&state.bind);
@@ -106,7 +136,7 @@ void frame(void) {
     sg_commit();
 }
 
-void cleanup(void) {
+static void cleanup(void) {
     sg_shutdown();
 }
 
