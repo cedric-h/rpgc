@@ -94,10 +94,10 @@ static void init(void) {
     /* -- font tex init -- */
     unsigned char ttf_buffer[1<<20];
     unsigned char temp_bitmap[512*512];
-    if (!fread(ttf_buffer, 1, 1<<20, fopen("./Ubuntu-R.ttf", "rb")))
+    if (!fread(ttf_buffer, 1, 1<<20, fopen("./WackClubSans-Regular.ttf", "rb")))
         perror("couldn't get font");
     // no guarantee this fits!
-    stbtt_BakeFontBitmap(ttf_buffer,0, 32.0, temp_bitmap,512,512, 32,96, cdata);
+    stbtt_BakeFontBitmap(ttf_buffer,0, 20.0, temp_bitmap,512,512, 32,96, cdata);
     state.bind.fs_images[SLOT_tex] = sg_make_image(&(sg_image_desc){
         .width = 512,
         .height = 512,
@@ -152,33 +152,33 @@ static void push_quad_idxs(Geo *geo, int quad_n) {
 static void frame(void) {
     int quad_n = 0;
 
-    Vert vertices[] = {
-        // positions            // colors
-        { -0.5f, 0.0f, 0.5f,     2.0f, },
-        {  0.5f, 0.0f, 0.5f,     2.0f, },
-        {  0.5f, 1.0f, 0.5f,     2.0f, },
-        { -0.5f, 1.0f, 0.5f,     2.0f, },
-    };
-    push_quad_idxs(&state.dyn_geo, quad_n++);
-    for (int i = 0; i < sizeof(vertices) / sizeof(Vert); i++)
-        vertices[i].x *=                           1.0f / 11.8f,
-        vertices[i].y *= sapp_widthf() / sapp_heightf() / 11.8f;
-    memcpy(state.dyn_geo.verts, vertices, sizeof(vertices));
+    // Vert vertices[] = {
+    //     // positions            // colors
+    //     { -0.5f, 0.0f, 0.5f,     2.0f, },
+    //     {  0.5f, 0.0f, 0.5f,     2.0f, },
+    //     {  0.5f, 1.0f, 0.5f,     2.0f, },
+    //     { -0.5f, 1.0f, 0.5f,     2.0f, },
+    // };
+    // push_quad_idxs(&state.dyn_geo, quad_n++);
+    // for (int i = 0; i < sizeof(vertices) / sizeof(Vert); i++)
+    //     vertices[i].x *=                           1.0f / 11.8f,
+    //     vertices[i].y *= sapp_widthf() / sapp_heightf() / 11.8f;
+    // memcpy(state.dyn_geo.verts, vertices, sizeof(vertices));
 
-    // Vert *v_wtr = state.dyn_geo.verts;
-    // float x = 0.0f, y = 20.0f;
-    // for (char *text = "hello world"; *++text;) {
-    //     stbtt_aligned_quad q;
-    //     stbtt_GetBakedQuad(cdata, 512,512, *text-32, &x,&y,&q,1);//1=opengl & d3d10+,0=d3d9
-    //     *v_wtr++ = (Vert) { q.x0, q.y0, 0.0f, 0.0f, q.s0, q.t0 };
-    //     *v_wtr++ = (Vert) { q.x1, q.y0, 0.0f, 0.0f, q.s1, q.t0 };
-    //     *v_wtr++ = (Vert) { q.x1, q.y1, 0.0f, 0.0f, q.s1, q.t1 };
-    //     *v_wtr++ = (Vert) { q.x0, q.y1, 0.0f, 0.0f, q.s0, q.t1 };
-    //     push_quad_idxs(&state.dyn_geo, quad_n++);
-    // }
-    // for (int i = 0; i < v_wtr - state.dyn_geo.verts; i++)
-    //     state.dyn_geo.verts[i].x = 2.0f * state.dyn_geo.verts[i].x / sapp_widthf() - 1.0,
-    //     state.dyn_geo.verts[i].y = 1.0 - 2.0f * state.dyn_geo.verts[i].y / sapp_heightf();
+    Vert *v_wtr = state.dyn_geo.verts;
+    float x = 20.0f, y = 20.0f;
+    for (char *text = "hello world"; *text; text++) {
+        stbtt_aligned_quad q;
+        stbtt_GetBakedQuad(cdata, 512,512, *text-32, &x,&y,&q,1);//1=opengl & d3d10+,0=d3d9
+        *v_wtr++ = (Vert) { q.x0, q.y0, 0.0f, 0.0f, q.s0, q.t0 };
+        *v_wtr++ = (Vert) { q.x1, q.y0, 0.0f, 0.0f, q.s1, q.t0 };
+        *v_wtr++ = (Vert) { q.x1, q.y1, 0.0f, 0.0f, q.s1, q.t1 };
+        *v_wtr++ = (Vert) { q.x0, q.y1, 0.0f, 0.0f, q.s0, q.t1 };
+        push_quad_idxs(&state.dyn_geo, quad_n++);
+    }
+    for (int i = 0; i < v_wtr - state.dyn_geo.verts; i++)
+        state.dyn_geo.verts[i].x = 2.0f * state.dyn_geo.verts[i].x / sapp_widthf() - 1.0,
+        state.dyn_geo.verts[i].y = 1.0 - 2.0f * state.dyn_geo.verts[i].y / sapp_heightf();
 
     sg_update_buffer(state.bind.vertex_buffers[0], &(sg_range) {
         .ptr = state.dyn_geo.verts,
