@@ -21,7 +21,7 @@ in vec2 uv;
 out vec4 frag_color;
 
 void main() {
-    frag_color = texture(tex, uv) * texture(
+    frag_color = vec4(texture(tex, uv).r) * texture(
         palette,
         vec2(
             (0.5 + int(palette_index) % 4) / 4,

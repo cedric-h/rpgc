@@ -15,9 +15,11 @@
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_glue.h"
 #include "build/shaders.glsl.h"
-#include "sokol/util/sokol_color.h"
 
-#define STB_TRUETYPE_IMPLEMENTATION  // force following include to generate implementation
+// #define STB_RECT_PACK_IMPLEMENTATION
+// #include "stb/stb_rect_pack.h"
+
+#define STB_TRUETYPE_IMPLEMENTATION
 #include "stb/stb_truetype.h"
 
 typedef struct { float x, y, z, color, u, v; } Vert;
@@ -46,6 +48,18 @@ static struct {
 
 stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
 
+
+#define PALETTE \
+    X(Color_White,  1.00f, 1.00f, 1.00f, 1.00f) \
+    X(Color_Blue,   0.00f, 0.47f, 0.95f, 1.00f) \
+    X(Color_Red,    0.90f, 0.16f, 0.22f, 1.00f) \
+    X(Color_Green,  0.00f, 0.89f, 0.19f, 1.00f) \
+    X(Color_Yellow, 0.99f, 0.98f, 0.00f, 1.00f) \
+
+#define X(name, r, g, b, a) name,
+typedef enum { PALETTE } Color;
+#undef X
+
 static void init(void) {
     state.dyn_geo = malloc_geo(1 << 10, 1 << 11);
 
@@ -66,22 +80,15 @@ static void init(void) {
         .label = "static-indices"
     });
 
-    uint8_t palette[4*4*4] = {0};
-    int i = 0;
-    sg_color color;
-#define WRITE_COLOR(input)                     \
-    color = (sg_color) input;                  \
-    palette[i++] = (uint8_t)(color.r * 255.0); \
-    palette[i++] = (uint8_t)(color.g * 255.0); \
-    palette[i++] = (uint8_t)(color.b * 255.0); \
-    palette[i++] = (uint8_t)(color.a * 255.0); \
+    uint8_t palette[4*4*4] = {0}, *plt_wtr = palette;
 
-    WRITE_COLOR(SG_WHITE);
-    WRITE_COLOR(SG_BLUE);
-    WRITE_COLOR(SG_RED);
-    WRITE_COLOR(SG_GREEN);
-    WRITE_COLOR(SG_YELLOW);
-#undef WRITE_COLOR
+#define X(name, r, g, b, a) \
+    *plt_wtr++ = (uint8_t)(r * 255.0); \
+    *plt_wtr++ = (uint8_t)(g * 255.0); \
+    *plt_wtr++ = (uint8_t)(b * 255.0); \
+    *plt_wtr++ = (uint8_t)(a * 255.0); 
+    PALETTE
+#undef X
     
     /* NOTE: tex_slot is provided by shader code generation */
     state.bind.fs_images[SLOT_palette] = sg_make_image(&(sg_image_desc){
@@ -98,6 +105,7 @@ static void init(void) {
         perror("couldn't get font");
     // no guarantee this fits!
     stbtt_BakeFontBitmap(ttf_buffer,0, 20.0, temp_bitmap,512,512, 32,96, cdata);
+    temp_bitmap[0] = 255;
     state.bind.fs_images[SLOT_tex] = sg_make_image(&(sg_image_desc){
         .width = 512,
         .height = 512,
@@ -113,7 +121,6 @@ static void init(void) {
     state.pip = sg_make_pipeline(&(sg_pipeline_desc){
         .shader = shd,
         .index_type = SG_INDEXTYPE_UINT16,
-        /* if the vertex layout doesn't have gaps, don't need to provide strides and offsets */
         .layout = {
             .attrs = {
                 [ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT3,
@@ -121,12 +128,19 @@ static void init(void) {
                 [ATTR_vs_uv0].format = SG_VERTEXFORMAT_FLOAT2,
             }
         },
+        .colors[0].blend = (sg_blend_state) {
+            .enabled = true,
+            .src_factor_rgb = SG_BLENDFACTOR_ONE, 
+            .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA, 
+            .src_factor_alpha = SG_BLENDFACTOR_ONE, 
+            .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+        },
         .label = "default-pipeline"
     });
 
     /* a pass action to framebuffer to black */
     state.pass_action = (sg_pass_action) {
-        .colors[0] = { .action=SG_ACTION_CLEAR, .value={0.0f, 0.0f, 0.0f, 1.0f } }
+        .colors[0] = { .action=SG_ACTION_CLEAR, .value={ 0.255f, 0.51f, 0.439f, 1.0f } }
     };
 }
 
@@ -151,34 +165,32 @@ static void push_quad_idxs(Geo *geo, int quad_n) {
 
 static void frame(void) {
     int quad_n = 0;
-
-    // Vert vertices[] = {
-    //     // positions            // colors
-    //     { -0.5f, 0.0f, 0.5f,     2.0f, },
-    //     {  0.5f, 0.0f, 0.5f,     2.0f, },
-    //     {  0.5f, 1.0f, 0.5f,     2.0f, },
-    //     { -0.5f, 1.0f, 0.5f,     2.0f, },
-    // };
-    // push_quad_idxs(&state.dyn_geo, quad_n++);
-    // for (int i = 0; i < sizeof(vertices) / sizeof(Vert); i++)
-    //     vertices[i].x *=                           1.0f / 11.8f,
-    //     vertices[i].y *= sapp_widthf() / sapp_heightf() / 11.8f;
-    // memcpy(state.dyn_geo.verts, vertices, sizeof(vertices));
-
     Vert *v_wtr = state.dyn_geo.verts;
+
+    *v_wtr++ = (Vert) { -0.5f, 0.0f, 0.5f, Color_Blue };
+    *v_wtr++ = (Vert) {  0.5f, 0.0f, 0.5f, Color_Blue };
+    *v_wtr++ = (Vert) {  0.5f, 1.0f, 0.5f, Color_Blue };
+    *v_wtr++ = (Vert) { -0.5f, 1.0f, 0.5f, Color_Blue };
+    push_quad_idxs(&state.dyn_geo, quad_n++);
+    for (int i = 0; i < 4; i++)
+        state.dyn_geo.verts[i].x *=                           1.0f / 11.8f,
+        state.dyn_geo.verts[i].y *= sapp_widthf() / sapp_heightf() / 11.8f;
+
+    Vert *text_start = v_wtr;
+
     float x = 20.0f, y = 20.0f;
     for (char *text = "hello world"; *text; text++) {
         stbtt_aligned_quad q;
         stbtt_GetBakedQuad(cdata, 512,512, *text-32, &x,&y,&q,1);//1=opengl & d3d10+,0=d3d9
-        *v_wtr++ = (Vert) { q.x0, q.y0, 0.0f, 0.0f, q.s0, q.t0 };
-        *v_wtr++ = (Vert) { q.x1, q.y0, 0.0f, 0.0f, q.s1, q.t0 };
-        *v_wtr++ = (Vert) { q.x1, q.y1, 0.0f, 0.0f, q.s1, q.t1 };
-        *v_wtr++ = (Vert) { q.x0, q.y1, 0.0f, 0.0f, q.s0, q.t1 };
+        *v_wtr++ = (Vert) { q.x0, q.y0, 0.0f, Color_White, q.s0, q.t0 };
+        *v_wtr++ = (Vert) { q.x1, q.y0, 0.0f, Color_White, q.s1, q.t0 };
+        *v_wtr++ = (Vert) { q.x1, q.y1, 0.0f, Color_White, q.s1, q.t1 };
+        *v_wtr++ = (Vert) { q.x0, q.y1, 0.0f, Color_White, q.s0, q.t1 };
         push_quad_idxs(&state.dyn_geo, quad_n++);
     }
-    for (int i = 0; i < v_wtr - state.dyn_geo.verts; i++)
-        state.dyn_geo.verts[i].x = 2.0f * state.dyn_geo.verts[i].x / sapp_widthf() - 1.0,
-        state.dyn_geo.verts[i].y = 1.0 - 2.0f * state.dyn_geo.verts[i].y / sapp_heightf();
+    for (Vert *i = text_start; i != v_wtr; i++)
+        i->x = 2.0f * i->x / sapp_widthf() - 1.0,
+        i->y = 1.0 - 2.0f * i->y / sapp_heightf();
 
     sg_update_buffer(state.bind.vertex_buffers[0], &(sg_range) {
         .ptr = state.dyn_geo.verts,
