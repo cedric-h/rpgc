@@ -15,6 +15,7 @@
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_glue.h"
 #include "build/shaders.glsl.h"
+#include "build/map.h"
 
 // #define STB_RECT_PACK_IMPLEMENTATION
 // #include "stb/stb_rect_pack.h"
@@ -29,7 +30,7 @@ typedef struct {
     uint16_t *idxs;
     int idx_bytes;
 } Geo;
-static Geo malloc_geo(int vert_n, int idx_n) {
+static Geo alloc_geo(int vert_n, int idx_n) {
     return (Geo) {
         .verts = calloc(sizeof(Vert), vert_n),
         .vert_bytes =   sizeof(Vert) * vert_n,
@@ -40,6 +41,7 @@ static Geo malloc_geo(int vert_n, int idx_n) {
 
 /* application state */
 static struct {
+    MapData map;
     Geo dyn_geo;
     sg_pipeline pip;
     sg_bindings bind;
@@ -50,18 +52,24 @@ stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
 
 
 #define PALETTE \
-    X(Color_White,  1.00f, 1.00f, 1.00f, 1.00f) \
-    X(Color_Blue,   0.00f, 0.47f, 0.95f, 1.00f) \
-    X(Color_Red,    0.90f, 0.16f, 0.22f, 1.00f) \
-    X(Color_Green,  0.00f, 0.89f, 0.19f, 1.00f) \
-    X(Color_Yellow, 0.99f, 0.98f, 0.00f, 1.00f) \
+    X(Color_White,      1.00f, 1.00f, 1.00f, 1.00f) \
+    X(Color_Brown,      0.50f, 0.42f, 0.31f, 1.00f) \
+    X(Color_Blue,       0.00f, 0.47f, 0.95f, 1.00f) \
+    X(Color_Red,        0.90f, 0.16f, 0.22f, 1.00f) \
+    X(Color_Green,      0.00f, 0.89f, 0.19f, 1.00f) \
+    X(Color_Yellow,     0.99f, 0.98f, 0.00f, 1.00f) \
+    X(Color_DarkGreen,  0.00f, 0.46f, 0.17f, 1.00f) \
+    X(Color_DarkGreen1, 0.04f, 0.50f, 0.21f, 1.00f) \
+    X(Color_DarkGreen2, 0.08f, 0.54f, 0.25f, 1.00f) \
+    X(Color_DarkGreen3, 0.12f, 0.58f, 0.29f, 1.00f) \
 
 #define X(name, r, g, b, a) name,
 typedef enum { PALETTE } Color;
 #undef X
 
 static void init(void) {
-    state.dyn_geo = malloc_geo(1 << 10, 1 << 11);
+    state.map = parse_map_data(fopen("build/map.bytes", "rb"));
+    state.dyn_geo = alloc_geo(1 << 15, 1 << 17);
 
     sg_setup(&(sg_desc){
         .context = sapp_sgcontext()
@@ -135,6 +143,10 @@ static void init(void) {
             .src_factor_alpha = SG_BLENDFACTOR_ONE, 
             .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
         },
+        .depth = {
+            .compare = SG_COMPAREFUNC_LESS_EQUAL,
+            .write_enabled = true
+        },
         .label = "default-pipeline"
     });
 
@@ -154,43 +166,122 @@ static void event(const sapp_event *ev) {
     }
 }
 
-static void push_quad_idxs(Geo *geo, int quad_n) {
-    geo->idxs[quad_n * 6 + 0] = quad_n * 4 + 0;
-    geo->idxs[quad_n * 6 + 1] = quad_n * 4 + 1;
-    geo->idxs[quad_n * 6 + 2] = quad_n * 4 + 2;
-    geo->idxs[quad_n * 6 + 3] = quad_n * 4 + 0;
-    geo->idxs[quad_n * 6 + 4] = quad_n * 4 + 2;
-    geo->idxs[quad_n * 6 + 5] = quad_n * 4 + 3;
+typedef struct {
+    Geo *geo;
+    uint16_t *idx;
+    Vert *vert;
+} GeoWtr;
+static GeoWtr geo_wtr(Geo *geo) {
+    return (GeoWtr) { .geo = geo, .vert = geo->verts, .idx = geo->idxs };
+}
+
+static void write_circ(GeoWtr *wtr, float x, float y, float r, Color clr, float z) {
+    size_t start = wtr->vert - wtr->geo->verts;
+    uint16_t circ_indices[] = {
+        2 + start, 6 + start, 8 + start,
+        0 + start, 1 + start, 8 + start,
+        1 + start, 2 + start, 8 + start,
+        2 + start, 3 + start, 4 + start,
+        4 + start, 5 + start, 2 + start,
+        5 + start, 6 + start, 2 + start,
+        6 + start, 7 + start, 8 + start
+    };
+    memcpy(wtr->idx, circ_indices, sizeof(circ_indices));
+    wtr->idx += sizeof(circ_indices) / sizeof(uint16_t);
+
+    *(wtr->vert)++ = (Vert) { x + r *  0.0000f, y + r *  1.0000f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r * -0.6428f, y + r *  0.7660f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r * -0.9848f, y + r *  0.1736f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r * -0.8660f, y + r * -0.5000f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r * -0.3420f, y + r * -0.9397f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.3420f, y + r * -0.9397f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.8660f, y + r * -0.5000f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.9848f, y + r *  0.1736f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.6428f, y + r *  0.7660f, z, clr };
+}
+
+
+static void write_quad(GeoWtr *wtr, Vert v0, Vert v1, Vert v2, Vert v3) {
+    size_t start = wtr->vert - wtr->geo->verts;
+    *(wtr->vert)++ = v0;
+    *(wtr->vert)++ = v1;
+    *(wtr->vert)++ = v2;
+    *(wtr->vert)++ = v3;
+
+    *(wtr->idx)++ = start + 0;
+    *(wtr->idx)++ = start + 1;
+    *(wtr->idx)++ = start + 2;
+    *(wtr->idx)++ = start + 0;
+    *(wtr->idx)++ = start + 2;
+    *(wtr->idx)++ = start + 3;
+}
+
+static void write_rect(GeoWtr *wtr, float x, float y, float w, float h, Color clr, float z) {
+    write_quad(
+        wtr,
+        (Vert) { x - w/2.0f, y    , z, clr },
+        (Vert) { x + w/2.0f, y    , z, clr },
+        (Vert) { x + w/2.0f, y + h, z, clr },
+        (Vert) { x - w/2.0f, y + h, z, clr }
+    );
 }
 
 static void frame(void) {
-    int quad_n = 0;
-    Vert *v_wtr = state.dyn_geo.verts;
+    GeoWtr wtr = geo_wtr(&state.dyn_geo); 
 
-    *v_wtr++ = (Vert) { -0.5f, 0.0f, 0.5f, Color_Blue };
-    *v_wtr++ = (Vert) {  0.5f, 0.0f, 0.5f, Color_Blue };
-    *v_wtr++ = (Vert) {  0.5f, 1.0f, 0.5f, Color_Blue };
-    *v_wtr++ = (Vert) { -0.5f, 1.0f, 0.5f, Color_Blue };
-    push_quad_idxs(&state.dyn_geo, quad_n++);
-    for (int i = 0; i < 4; i++)
-        state.dyn_geo.verts[i].x *=                           1.0f / 11.8f,
-        state.dyn_geo.verts[i].y *= sapp_widthf() / sapp_heightf() / 11.8f;
+#define map (state.map)
+    { /* push game ents */
+        write_rect(&wtr, 0.0f, 0.0f, 1.0f, 1.0f, Color_Blue, 0.0f);
 
-    Vert *text_start = v_wtr;
+        for (MapData_Tree *t = map.trees; (t - map.trees) < map.ntrees; t++) {
+            float w = 0.8f, h = 1.618034f, r = 0.4f;
+            write_circ(&wtr, t->x, t->y + r, r, Color_Brown, -t->y);
+            write_rect(&wtr, t->x, t->y + r, w, h, Color_Brown, -t->y);
+            write_circ(&wtr, t->x + 0.80f, t->y + 2.2f, 0.8f, Color_DarkGreen, -t->y);
+            write_circ(&wtr, t->x + 0.16f, t->y + 3.0f, 1.0f, Color_DarkGreen1, -t->y);
+            write_circ(&wtr, t->x - 0.80f, t->y + 2.5f, 0.9f, Color_DarkGreen2, -t->y);
+            write_circ(&wtr, t->x - 0.16f, t->y + 2.0f, 0.8f, Color_DarkGreen3, -t->y);
+        }
 
-    float x = 20.0f, y = 20.0f;
-    for (char *text = "hello world"; *text; text++) {
-        stbtt_aligned_quad q;
-        stbtt_GetBakedQuad(cdata, 512,512, *text-32, &x,&y,&q,1);//1=opengl & d3d10+,0=d3d9
-        *v_wtr++ = (Vert) { q.x0, q.y0, 0.0f, Color_White, q.s0, q.t0 };
-        *v_wtr++ = (Vert) { q.x1, q.y0, 0.0f, Color_White, q.s1, q.t0 };
-        *v_wtr++ = (Vert) { q.x1, q.y1, 0.0f, Color_White, q.s1, q.t1 };
-        *v_wtr++ = (Vert) { q.x0, q.y1, 0.0f, Color_White, q.s0, q.t1 };
-        push_quad_idxs(&state.dyn_geo, quad_n++);
+        float min_z = -1.0f, max_z = 1.0f;
+        for (Vert *i = state.dyn_geo.verts; i != wtr.vert; i++)
+            min_z = (i->z < min_z) ? i->z : min_z,
+            max_z = (i->z > max_z) ? i->z : max_z;
+
+        for (Vert *i = state.dyn_geo.verts; i != wtr.vert; i++)
+            i->x *=                           1.0f / 11.8f,
+            i->y *= sapp_widthf() / sapp_heightf() / 11.8f,
+            i->z = 1.0f - 2.0f * (i->z - min_z) / (max_z - min_z);
     }
-    for (Vert *i = text_start; i != v_wtr; i++)
-        i->x = 2.0f * i->x / sapp_widthf() - 1.0,
-        i->y = 1.0 - 2.0f * i->y / sapp_heightf();
+#undef map
+
+    { /* push text */
+        Vert *text_start = wtr.vert;
+        float x = 20.0f, y = 20.0f;
+        for (char *text = "hello world"; *text; text++) {
+            stbtt_aligned_quad q;
+            stbtt_GetBakedQuad(cdata, 512,512, *text-32, &x,&y,&q,1);//1=opengl & d3d10+,0=d3d9
+            write_quad(
+                &wtr,
+                (Vert) { q.x0, q.y0, -1.0f, Color_White, q.s0, q.t0 },
+                (Vert) { q.x1, q.y0, -1.0f, Color_White, q.s1, q.t0 },
+                (Vert) { q.x1, q.y1, -1.0f, Color_White, q.s1, q.t1 },
+                (Vert) { q.x0, q.y1, -1.0f, Color_White, q.s0, q.t1 }
+            );
+        }
+        for (Vert *i = text_start; i != wtr.vert; i++)
+            i->x = 2.0f * i->x / sapp_widthf() - 1.0f,
+            i->y = 1.0f - 2.0f * i->y / sapp_heightf();
+    }
+
+    size_t v_used = wtr.vert - state.dyn_geo.verts;
+    uint32_t max_v = state.dyn_geo.vert_bytes / sizeof(Vert);
+    if (v_used > max_v) printf("%ld/%u verts used!\n", v_used, max_v), exit(1);
+
+    size_t i_used = wtr.idx - state.dyn_geo.idxs;
+    uint32_t max_i = state.dyn_geo.idx_bytes / sizeof(uint16_t);
+    if (i_used > max_i) printf("%ld/%u idxs used!\n", i_used, max_i), exit(1);
+
 
     sg_update_buffer(state.bind.vertex_buffers[0], &(sg_range) {
         .ptr = state.dyn_geo.verts,
@@ -205,7 +296,7 @@ static void frame(void) {
     sg_begin_default_pass(&state.pass_action, sapp_width(), sapp_height());
     sg_apply_pipeline(state.pip);
     sg_apply_bindings(&state.bind);
-    sg_draw(0, quad_n * 6, 1);
+    sg_draw(0, wtr.idx - state.dyn_geo.idxs, 1);
     sg_end_pass();
     sg_commit();
 }
@@ -224,7 +315,7 @@ sapp_desc sokol_main(int argc, char* argv[]) {
         .width = 640,
         .height = 480,
         .gl_force_gles2 = true,
-        .window_title = "Triangle (sokol-app)",
+        .window_title = "rpgc",
         .icon.sokol_default = true,
         .sample_count = 4,
     };
