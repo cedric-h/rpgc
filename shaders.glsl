@@ -1,4 +1,10 @@
+#pragma sokol @ctype mat4 Mat4
+
 #pragma sokol @vs vs
+uniform vs_params {
+    mat4 mvp;
+};
+
 in vec4 position;
 in float palette_index0;
 in vec2 uv0;
@@ -7,7 +13,7 @@ out float palette_index;
 out vec2 uv;
 
 void main() {
-    gl_Position = position;
+    gl_Position = mvp * position;
     palette_index = palette_index0;
     uv = uv0;
 }

@@ -14,7 +14,24 @@
 #include "sokol/sokol_app.h"
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_glue.h"
+
+typedef struct { float arr[4][4]; } Mat4;
+static Mat4 ortho4x4(float left, float right, float bottom, float top, float near, float far) {
+    Mat4 res = {0};
+
+    res.arr[0][0] = 2.0f / (right - left);
+    res.arr[1][1] = 2.0f / (top - bottom);
+    res.arr[2][2] = 2.0f / (near - far);
+    res.arr[3][3] = 1.0f;
+
+    res.arr[3][0] = (left + right) / (left - right);
+    res.arr[3][1] = (bottom + top) / (bottom - top);
+    res.arr[3][2] = (far + near) / (near - far);
+
+    return res;
+}
 #include "build/shaders.glsl.h"
+
 #include "build/map.h"
 
 // #define STB_RECT_PACK_IMPLEMENTATION
@@ -28,6 +45,7 @@ typedef struct {
     Vert *verts;
     uint16_t *idxs;
     int nvert, nidx;
+    float min_z, max_z;
     sg_bindings bind;
 } Geo;
 static Geo geo_alloc(int nvert, int nidx) {
@@ -57,6 +75,12 @@ static void geo_bind_init(Geo *geo, const char *lvert, const char *lidx, sg_usag
         .label = lidx
     });
 }
+float geo_min_z = -1.0f, geo_max_z = 1.0f;
+static void geo_find_z_range(Vert *beg, Vert *end) {
+    for (Vert *i = beg; i != end; i++)
+        geo_min_z = (i->z < geo_min_z) ? i->z : geo_min_z,
+        geo_max_z = (i->z > geo_max_z) ? i->z : geo_max_z;
+}
 
 /* application state */
 static struct {
@@ -77,10 +101,11 @@ stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
     X(Color_Red,        0.90f, 0.16f, 0.22f, 1.00f) \
     X(Color_Green,      0.00f, 0.89f, 0.19f, 1.00f) \
     X(Color_Yellow,     0.99f, 0.98f, 0.00f, 1.00f) \
-    X(Color_DarkGreen,  0.00f, 0.46f, 0.17f, 1.00f) \
-    X(Color_DarkGreen1, 0.04f, 0.50f, 0.21f, 1.00f) \
-    X(Color_DarkGreen2, 0.08f, 0.54f, 0.25f, 1.00f) \
-    X(Color_DarkGreen3, 0.12f, 0.58f, 0.29f, 1.00f) \
+    X(Color_TreeBorder, 0.00f, 0.42f, 0.13f, 1.00f) \
+    X(Color_TreeGreen,  0.00f, 0.46f, 0.17f, 1.00f) \
+    X(Color_TreeGreen1, 0.04f, 0.50f, 0.21f, 1.00f) \
+    X(Color_TreeGreen2, 0.08f, 0.54f, 0.25f, 1.00f) \
+    X(Color_TreeGreen3, 0.12f, 0.58f, 0.29f, 1.00f) \
 
 #define X(name, r, g, b, a) name,
 typedef enum { PALETTE } Color;
@@ -146,18 +171,6 @@ static void write_rect(GeoWtr *wtr, float x, float y, float w, float h, Color cl
     );
 }
 
-static void game_project_verts(Vert *beg, Vert *end) {
-    float min_z = -1.0f, max_z = 1.0f;
-    for (Vert *i = beg; i != end; i++)
-        min_z = (i->z < min_z) ? i->z : min_z,
-        max_z = (i->z > max_z) ? i->z : max_z;
-
-    for (Vert *i = beg; i != end; i++)
-        i->x *=                           1.0f / 11.8f,
-        i->y *= sapp_widthf() / sapp_heightf() / 11.8f,
-        i->z = 1.0f - 2.0f * (i->z - min_z) / (max_z - min_z);
-}
-
 #define map (state.map)
 static size_t write_map(Geo *geo) {
     GeoWtr wtr = geo_wtr(geo); 
@@ -166,13 +179,19 @@ static size_t write_map(Geo *geo) {
         float w = 0.8f, h = 1.618034f, r = 0.4f;
         write_circ(&wtr, t->x, t->y + r, r, Color_Brown, -t->y);
         write_rect(&wtr, t->x, t->y + r, w, h, Color_Brown, -t->y);
-        write_circ(&wtr, t->x + 0.80f, t->y + 2.2f, 0.8f, Color_DarkGreen, -t->y);
-        write_circ(&wtr, t->x + 0.16f, t->y + 3.0f, 1.0f, Color_DarkGreen1, -t->y);
-        write_circ(&wtr, t->x - 0.80f, t->y + 2.5f, 0.9f, Color_DarkGreen2, -t->y);
-        write_circ(&wtr, t->x - 0.16f, t->y + 2.0f, 0.8f, Color_DarkGreen3, -t->y);
+
+        write_circ(&wtr, t->x + 0.80f, t->y + 2.2f, 0.8f, Color_TreeGreen,  1.1f-t->y);
+        write_circ(&wtr, t->x + 0.16f, t->y + 3.0f, 1.0f, Color_TreeGreen1, 1.1f-t->y);
+        write_circ(&wtr, t->x - 0.80f, t->y + 2.5f, 0.9f, Color_TreeGreen2, 1.1f-t->y);
+        write_circ(&wtr, t->x - 0.16f, t->y + 2.0f, 0.8f, Color_TreeGreen3, 1.1f-t->y);
+
+        write_circ(&wtr, t->x + 0.80f, t->y + 2.2f, 0.8f+0.1f, Color_TreeBorder, -t->y);
+        write_circ(&wtr, t->x + 0.16f, t->y + 3.0f, 1.0f+0.1f, Color_TreeBorder, -t->y);
+        write_circ(&wtr, t->x - 0.80f, t->y + 2.5f, 0.9f+0.1f, Color_TreeBorder, -t->y);
+        write_circ(&wtr, t->x - 0.16f, t->y + 2.0f, 0.8f+0.1f, Color_TreeBorder, -t->y);
     }
 
-    game_project_verts(geo->verts, wtr.vert);
+    geo_find_z_range(geo->verts, wtr.vert);
     return wtr.idx - geo->idxs;
 }
 #undef map
@@ -183,7 +202,7 @@ static void init(void) {
     });
 
     state.map = parse_map_data(fopen("build/map.bytes", "rb"));
-    state.static_geo = geo_alloc(1 << 15, 1 << 17);
+    state.static_geo = geo_alloc(1 << 16, 1 << 18);
     state.static_geo_n_idx = write_map(&state.static_geo);
     geo_bind_init(&state.static_geo, "static_vert", "static_idx", SG_USAGE_IMMUTABLE);
 
@@ -217,7 +236,8 @@ static void init(void) {
     // no guarantee this fits!
     stbtt_BakeFontBitmap(ttf_buffer,0, 20.0, temp_bitmap,512,512, 32,96, cdata);
     temp_bitmap[0] = 255;
-    state.dyn_geo.bind.fs_images[SLOT_tex] = state.static_geo.bind.fs_images[SLOT_tex] = sg_make_image(&(sg_image_desc){
+    state.dyn_geo.bind.fs_images[SLOT_tex] =
+    state.static_geo.bind.fs_images[SLOT_tex] = sg_make_image(&(sg_image_desc){
         .width = 512,
         .height = 512,
         .pixel_format = SG_PIXELFORMAT_R8,
@@ -276,26 +296,23 @@ static void frame(void) {
     { /* push game ents */
         write_rect(&wtr, 0.0f, 0.0f, 1.0f, 1.0f, Color_Blue, 0.0f);
 
-        game_project_verts(state.dyn_geo.verts, wtr.vert);
+        geo_find_z_range(state.dyn_geo.verts, wtr.vert);
     }
 
+    uint16_t *text_start = wtr.idx;
     { /* push text */
-        Vert *text_start = wtr.vert;
         float x = 20.0f, y = 20.0f;
         for (char *text = "hello world"; *text; text++) {
             stbtt_aligned_quad q;
             stbtt_GetBakedQuad(cdata, 512,512, *text-32, &x,&y,&q,1);//1=opengl & d3d10+,0=d3d9
             write_quad(
                 &wtr,
-                (Vert) { q.x0, q.y0, -1.0f, Color_White, q.s0, q.t0 },
-                (Vert) { q.x1, q.y0, -1.0f, Color_White, q.s1, q.t0 },
-                (Vert) { q.x1, q.y1, -1.0f, Color_White, q.s1, q.t1 },
-                (Vert) { q.x0, q.y1, -1.0f, Color_White, q.s0, q.t1 }
+                (Vert) { q.x0, q.y0, -1.0f, Color_White, q.s0, q.t1 },
+                (Vert) { q.x1, q.y0, -1.0f, Color_White, q.s1, q.t1 },
+                (Vert) { q.x1, q.y1, -1.0f, Color_White, q.s1, q.t0 },
+                (Vert) { q.x0, q.y1, -1.0f, Color_White, q.s0, q.t0 }
             );
         }
-        for (Vert *i = text_start; i != wtr.vert; i++)
-            i->x = 2.0f * i->x / sapp_widthf() - 1.0f,
-            i->y = 1.0f - 2.0f * i->y / sapp_heightf();
     }
 
     size_t v_used = wtr.vert - state.dyn_geo.verts;
@@ -320,11 +337,30 @@ static void frame(void) {
     sg_begin_default_pass(&state.pass_action, sapp_width(), sapp_height());
     sg_apply_pipeline(state.pip);
 
+    float xx = 1.0f / 11.8f;
+    float yy = sapp_widthf() / sapp_heightf() / 11.8f;
+    float zz = 2.0f / (geo_min_z - geo_max_z);
+    float zw = (geo_max_z + geo_min_z) / (geo_min_z - geo_max_z);
+    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(((vs_params_t) {
+        .mvp.arr = {
+            {   xx, 0.0f, 0.0f, 0.0f },
+            { 0.0f,   yy, 0.0f, 0.0f },
+            { 0.0f, 0.0f,   zz, 0.0f },
+            { 0.0f, 0.0f,   zw, 1.0f },
+        }
+    })));
+
     sg_apply_bindings(&state.static_geo.bind);
     sg_draw(0, state.static_geo_n_idx, 1);
 
     sg_apply_bindings(&state.dyn_geo.bind);
-    sg_draw(0, wtr.idx - state.dyn_geo.idxs, 1);
+    sg_draw(0, text_start - state.dyn_geo.idxs, 1);
+
+
+    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(((vs_params_t) {
+        .mvp = ortho4x4(0.0f, sapp_widthf(), 0.0f, sapp_heightf(), -1.0f, 1.0f),
+    })));
+    sg_draw(text_start - state.dyn_geo.idxs, wtr.idx - text_start, 1);
 
     sg_end_pass();
     sg_commit();
