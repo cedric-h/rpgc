@@ -6,4 +6,7 @@ sup nerds. this is a rewrite in C of [a game i wrote in rust a while ago](github
 `git submodule update --init`
 
 ## run
-./bake.sh && ./build/a.out
+`./bake.sh && ./build/a.out`
+
+## watch
+`ls *.c | entr -s 'echo && ./bake.sh && ./build/a.out'`
