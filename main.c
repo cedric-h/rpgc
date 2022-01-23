@@ -137,17 +137,18 @@ stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
 
 
 #define PALETTE \
-    X(Color_White,      1.00f, 1.00f, 1.00f, 1.00f) \
-    X(Color_Brown,      0.50f, 0.42f, 0.31f, 1.00f) \
-    X(Color_Blue,       0.00f, 0.47f, 0.95f, 1.00f) \
-    X(Color_Red,        0.90f, 0.16f, 0.22f, 1.00f) \
-    X(Color_Green,      0.00f, 0.89f, 0.19f, 1.00f) \
-    X(Color_Yellow,     0.99f, 0.98f, 0.00f, 1.00f) \
-    X(Color_TreeBorder, 0.00f, 0.42f, 0.13f, 1.00f) \
-    X(Color_TreeGreen,  0.00f, 0.46f, 0.17f, 1.00f) \
-    X(Color_TreeGreen1, 0.04f, 0.50f, 0.21f, 1.00f) \
-    X(Color_TreeGreen2, 0.08f, 0.54f, 0.25f, 1.00f) \
-    X(Color_TreeGreen3, 0.12f, 0.58f, 0.29f, 1.00f) \
+    X(Color_White,        1.00f, 1.00f, 1.00f, 1.00f) \
+    X(Color_Brown,        0.50f, 0.42f, 0.31f, 1.00f) \
+    X(Color_Blue,         0.00f, 0.47f, 0.95f, 1.00f) \
+    X(Color_Red,          0.90f, 0.16f, 0.22f, 1.00f) \
+    X(Color_Green,        0.00f, 0.89f, 0.19f, 1.00f) \
+    X(Color_Yellow,       0.99f, 0.98f, 0.00f, 1.00f) \
+    X(Color_ForestShadow, 0.18f, 0.43f, 0.36f, 1.00f) \
+    X(Color_TreeBorder,   0.00f, 0.42f, 0.13f, 1.00f) \
+    X(Color_TreeGreen,    0.00f, 0.46f, 0.17f, 1.00f) \
+    X(Color_TreeGreen1,   0.04f, 0.50f, 0.21f, 1.00f) \
+    X(Color_TreeGreen2,   0.08f, 0.54f, 0.25f, 1.00f) \
+    X(Color_TreeGreen3,   0.12f, 0.58f, 0.29f, 1.00f) \
 
 #define X(name, r, g, b, a) name,
 typedef enum { PALETTE } Color;
@@ -252,6 +253,9 @@ static size_t write_map(Geo *geo) {
         write_circ(&wtr, t->x + 0.16f, t->y + 3.0f, 1.0f+0.1f, Color_TreeBorder, t->y);
         write_circ(&wtr, t->x - 0.80f, t->y + 2.5f, 0.9f+0.1f, Color_TreeBorder, t->y);
         write_circ(&wtr, t->x - 0.16f, t->y + 2.0f, 0.8f+0.1f, Color_TreeBorder, t->y);
+
+        float sr = 0.82f;
+        write_circ(&wtr, t->x, t->y + r, sr, Color_ForestShadow, t->y + sr);
     }
 
     geo_find_z_range(geo->verts, wtr.vert);
@@ -389,16 +393,18 @@ static void frame(void) {
 
     uint16_t *text_start = wtr.idx;
     { /* push text */
-        float x = 20.0f, y = 20.0f;
-        for (char *text = "hello world"; *text; text++) {
+        float x = sapp_widthf() - 80.0f, y = sapp_heightf();
+        char buf[10];
+        sprintf(buf, "%d FPS", (int)roundf(1.0f / sapp_frame_duration()));
+        for (char *text = buf; *text; text++) {
             stbtt_aligned_quad q;
             stbtt_GetBakedQuad(cdata, 512,512, *text-32, &x,&y,&q,1);//1=opengl & d3d10+,0=d3d9
             write_quad(
                 &wtr,
-                (Vert) { q.x0, q.y0, -1.0f, Color_White, q.s0, q.t1 },
-                (Vert) { q.x1, q.y0, -1.0f, Color_White, q.s1, q.t1 },
-                (Vert) { q.x1, q.y1, -1.0f, Color_White, q.s1, q.t0 },
-                (Vert) { q.x0, q.y1, -1.0f, Color_White, q.s0, q.t0 }
+                (Vert) { q.x0, q.y0, 1.0f, Color_White, q.s0, q.t1 },
+                (Vert) { q.x1, q.y0, 1.0f, Color_White, q.s1, q.t1 },
+                (Vert) { q.x1, q.y1, 1.0f, Color_White, q.s1, q.t0 },
+                (Vert) { q.x0, q.y1, 1.0f, Color_White, q.s0, q.t0 }
             );
         }
     }
