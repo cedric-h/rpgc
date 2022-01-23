@@ -240,18 +240,18 @@ static size_t write_map(Geo *geo) {
 
     for (MapData_Tree *t = map.trees; (t - map.trees) < map.ntrees; t++) {
         float w = 0.8f, h = 1.618034f, r = 0.4f;
-        write_circ(&wtr, t->x, t->y + r, r, Color_Brown, -t->y);
-        write_rect(&wtr, t->x, t->y + r, w, h, Color_Brown, -t->y);
+        write_circ(&wtr, t->x, t->y + r, r, Color_Brown, t->y);
+        write_rect(&wtr, t->x, t->y + r, w, h, Color_Brown, t->y);
 
-        write_circ(&wtr, t->x + 0.80f, t->y + 2.2f, 0.8f, Color_TreeGreen,  1.1f-t->y);
-        write_circ(&wtr, t->x + 0.16f, t->y + 3.0f, 1.0f, Color_TreeGreen1, 1.1f-t->y);
-        write_circ(&wtr, t->x - 0.80f, t->y + 2.5f, 0.9f, Color_TreeGreen2, 1.1f-t->y);
-        write_circ(&wtr, t->x - 0.16f, t->y + 2.0f, 0.8f, Color_TreeGreen3, 1.1f-t->y);
+        write_circ(&wtr, t->x + 0.80f, t->y + 2.2f, 0.8f, Color_TreeGreen,  t->y - 1.1f);
+        write_circ(&wtr, t->x + 0.16f, t->y + 3.0f, 1.0f, Color_TreeGreen1, t->y - 1.1f);
+        write_circ(&wtr, t->x - 0.80f, t->y + 2.5f, 0.9f, Color_TreeGreen2, t->y - 1.1f);
+        write_circ(&wtr, t->x - 0.16f, t->y + 2.0f, 0.8f, Color_TreeGreen3, t->y - 1.1f);
 
-        write_circ(&wtr, t->x + 0.80f, t->y + 2.2f, 0.8f+0.1f, Color_TreeBorder, -t->y);
-        write_circ(&wtr, t->x + 0.16f, t->y + 3.0f, 1.0f+0.1f, Color_TreeBorder, -t->y);
-        write_circ(&wtr, t->x - 0.80f, t->y + 2.5f, 0.9f+0.1f, Color_TreeBorder, -t->y);
-        write_circ(&wtr, t->x - 0.16f, t->y + 2.0f, 0.8f+0.1f, Color_TreeBorder, -t->y);
+        write_circ(&wtr, t->x + 0.80f, t->y + 2.2f, 0.8f+0.1f, Color_TreeBorder, t->y);
+        write_circ(&wtr, t->x + 0.16f, t->y + 3.0f, 1.0f+0.1f, Color_TreeBorder, t->y);
+        write_circ(&wtr, t->x - 0.80f, t->y + 2.5f, 0.9f+0.1f, Color_TreeBorder, t->y);
+        write_circ(&wtr, t->x - 0.16f, t->y + 2.0f, 0.8f+0.1f, Color_TreeBorder, t->y);
     }
 
     geo_find_z_range(geo->verts, wtr.vert);
@@ -382,7 +382,7 @@ static void frame(void) {
 
     { /* push game ents */
         Vec2 ppos = state.player.pos;
-        write_rect(&wtr, ppos.x, ppos.y, 1.0f, 1.0f, Color_Blue, 0.0f);
+        write_rect(&wtr, ppos.x, ppos.y, 1.0f, 1.0f, Color_Blue, ppos.y);
 
         geo_find_z_range(state.dyn_geo.verts, wtr.vert);
     }
@@ -408,10 +408,12 @@ static void frame(void) {
     sg_begin_default_pass(&state.pass_action, sapp_width(), sapp_height());
     sg_apply_pipeline(state.pip);
 
+    float f_range = 1.0f / (geo_max_z - geo_min_z);
+
     float xx = 1.0f / 11.8f;
     float yy = sapp_widthf() / sapp_heightf() / 11.8f;
-    float zz = 2.0f / (geo_min_z - geo_max_z);
-    float zw = (geo_max_z + geo_min_z) / (geo_min_z - geo_max_z);
+    float zz = f_range;
+    float zw = -f_range * geo_min_z;
     vs_params_t vs_params = {
         .mvp.arr = {
             {   xx, 0.0f, 0.0f, 0.0f },
