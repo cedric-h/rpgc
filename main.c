@@ -1,3 +1,5 @@
+#include <math.h>
+
 #define SOKOL_IMPL
 #if defined(_MSC_VER)
     #define SOKOL_D3D11
@@ -11,10 +13,23 @@
     #define SOKOL_GLCORE33
 #endif
 
+#include "sokol/sokol_time.h"
 #include "sokol/sokol_app.h"
 #include "sokol/sokol_gfx.h"
 #include "sokol/sokol_glue.h"
 
+#define vec2(_x, _y) ((Vec2) { .x = (_x), .y = (_y) })
+typedef union { struct { float x, y; }; float arr[2]; } Vec2;
+// static Vec2 sub2(Vec2 a, Vec2 b) { return vec2(a.x-b.x, a.y-b.y); }
+static Vec2 add2(Vec2 a, Vec2 b) { return vec2(a.x+b.x, a.y+b.y); }
+// static Vec2 sub2f(Vec2 a, float f) { return vec2(a.x-f, a.y-f); }
+static Vec2 div2f(Vec2 a, float f) { return vec2(a.x/f, a.y/f); }
+static Vec2 mul2f(Vec2 a, float f) { return vec2(a.x*f, a.y*f); }
+static float dot2(Vec2 a, Vec2 b) { return a.x*b.x + a.y*b.y; }
+static float mag2(Vec2 a) { return sqrtf(dot2(a, a)); }
+static Vec2 lerp2(Vec2 a, Vec2 b, float t) { return add2(mul2f(a, 1.0f - t), mul2f(b, t)); }
+// static float dist2(Vec2 a, Vec2 b) { return mag2(sub2(a, b)); }
+static Vec2 norm2(Vec2 a) { return div2f(a, mag2(a) ?: 1.0f); }
 typedef struct { float arr[4][4]; } Mat4;
 static Mat4 ortho4x4(float left, float right, float bottom, float top, float near, float far) {
     Mat4 res = {0};
@@ -30,6 +45,20 @@ static Mat4 ortho4x4(float left, float right, float bottom, float top, float nea
 
     return res;
 }
+
+typedef struct { float arr[4]; } Vec4;
+static Vec4 mul4x44(Mat4 m, Vec4 v) {
+  Vec4 res;
+  for(int x = 0; x < 4; ++x) {
+    float sum = 0;
+    for(int y = 0; y < 4; ++y)
+      sum += m.arr[y][x] * v.arr[y];
+
+    res.arr[x] = sum;
+  }
+  return res;
+}
+
 #include "build/shaders.glsl.h"
 
 #include "build/map.h"
@@ -39,6 +68,8 @@ static Mat4 ortho4x4(float left, float right, float bottom, float top, float nea
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb/stb_truetype.h"
+
+typedef uint64_t Tick;
 
 typedef struct { float x, y, z, color, u, v; } Vert;
 typedef struct {
@@ -85,8 +116,19 @@ static void geo_find_z_range(Vert *beg, Vert *end) {
 /* application state */
 static struct {
     MapData map;
+    
+    uint8_t keys[SAPP_MAX_KEYCODES];
+
+    uint64_t frame; /* a sokol_time tick, not one of our game ticks */
+    Tick tick;
+    double fixed_tick_accumulator;
+
+    struct { Vec2 pos, vel; } player;
+    Vec2 cam;
+
     Geo static_geo, dyn_geo;
     size_t static_geo_n_idx;
+
     sg_pipeline pip;
     sg_pass_action pass_action;
 } state;
@@ -118,6 +160,27 @@ typedef struct {
 } GeoWtr;
 static GeoWtr geo_wtr(Geo *geo) {
     return (GeoWtr) { .geo = geo, .vert = geo->verts, .idx = geo->idxs };
+}
+
+static void geo_wtr_flush(GeoWtr *wtr) {
+    size_t v_used = wtr->vert - wtr->geo->verts;
+    uint32_t max_v = wtr->geo->nvert;
+    if (v_used > max_v) printf("%ld/%u verts used!\n", v_used, max_v), exit(1);
+
+    size_t i_used = wtr->idx - wtr->geo->idxs;
+    uint32_t max_i = wtr->geo->nidx;
+    if (i_used > max_i) printf("%ld/%u idxs used!\n", i_used, max_i), exit(1);
+
+
+    sg_update_buffer(wtr->geo->bind.vertex_buffers[0], &(sg_range) {
+        .ptr = wtr->geo->verts,
+        .size = (wtr->vert - wtr->geo->verts) * sizeof(Vert),
+    });
+
+    sg_update_buffer(wtr->geo->bind.index_buffer, &(sg_range) {
+        .ptr = wtr->geo->idxs,
+        .size = (wtr->idx - wtr->geo->idxs) * sizeof(uint16_t),
+    });
 }
 
 static void write_circ(GeoWtr *wtr, float x, float y, float r, Color clr, float z) {
@@ -197,14 +260,15 @@ static size_t write_map(Geo *geo) {
 #undef map
 
 static void init(void) {
-    sg_setup(&(sg_desc){
-        .context = sapp_sgcontext()
-    });
+    stm_setup();
+    sg_setup(&(sg_desc){ .context = sapp_sgcontext() });
 
     state.map = parse_map_data(fopen("build/map.bytes", "rb"));
     state.static_geo = geo_alloc(1 << 16, 1 << 18);
     state.static_geo_n_idx = write_map(&state.static_geo);
     geo_bind_init(&state.static_geo, "static_vert", "static_idx", SG_USAGE_IMMUTABLE);
+    free(state.static_geo.verts);
+    free(state.static_geo.idxs);
 
     state.dyn_geo = geo_alloc(1 << 15, 1 << 17);
     geo_bind_init(&state.dyn_geo, "dyn_vert", "dyn_idx", SG_USAGE_STREAM);
@@ -281,7 +345,9 @@ static void init(void) {
 
 static void event(const sapp_event *ev) {
     switch (ev->type) {
+        case SAPP_EVENTTYPE_KEY_UP:
         case SAPP_EVENTTYPE_KEY_DOWN: {
+            state.keys[ev->key_code] = ev->type == SAPP_EVENTTYPE_KEY_DOWN;
             if (ev->key_code == SAPP_KEYCODE_ESCAPE)
                 sapp_request_quit();
         } break;
@@ -289,12 +355,34 @@ static void event(const sapp_event *ev) {
     }
 }
 
+#define TICK_MS (1000.0f / 60.0f)
+static void tick(void) {
+    state.cam = lerp2(state.cam, add2(state.player.pos, vec2(0.0f, 0.5f)), 0.05f);
+
+    Vec2 move = {0};
+    if (state.keys[SAPP_KEYCODE_W]) move.y += 1.0;
+    if (state.keys[SAPP_KEYCODE_S]) move.y -= 1.0;
+    if (state.keys[SAPP_KEYCODE_A]) move.x -= 1.0;
+    if (state.keys[SAPP_KEYCODE_D]) move.x += 1.0;
+    state.player.vel = add2(state.player.vel, mul2f(norm2(move), 0.0075f));
+
+    state.player.pos = add2(state.player.pos, state.player.vel);
+    state.player.vel = mul2f(state.player.vel, 0.93f);
+}
 
 static void frame(void) {
+    double elapsed = stm_ms(stm_laptime(&state.frame));
+    state.fixed_tick_accumulator += elapsed;
+    while (state.fixed_tick_accumulator > TICK_MS) {
+        state.fixed_tick_accumulator -= TICK_MS;
+        tick();
+    }
+
     GeoWtr wtr = geo_wtr(&state.dyn_geo); 
 
     { /* push game ents */
-        write_rect(&wtr, 0.0f, 0.0f, 1.0f, 1.0f, Color_Blue, 0.0f);
+        Vec2 ppos = state.player.pos;
+        write_rect(&wtr, ppos.x, ppos.y, 1.0f, 1.0f, Color_Blue, 0.0f);
 
         geo_find_z_range(state.dyn_geo.verts, wtr.vert);
     }
@@ -315,24 +403,7 @@ static void frame(void) {
         }
     }
 
-    size_t v_used = wtr.vert - state.dyn_geo.verts;
-    uint32_t max_v = state.dyn_geo.nvert;
-    if (v_used > max_v) printf("%ld/%u verts used!\n", v_used, max_v), exit(1);
-
-    size_t i_used = wtr.idx - state.dyn_geo.idxs;
-    uint32_t max_i = state.dyn_geo.nidx;
-    if (i_used > max_i) printf("%ld/%u idxs used!\n", i_used, max_i), exit(1);
-
-
-    sg_update_buffer(state.dyn_geo.bind.vertex_buffers[0], &(sg_range) {
-        .ptr = state.dyn_geo.verts,
-        .size = (wtr.vert - state.dyn_geo.verts) * sizeof(Vert),
-    });
-
-    sg_update_buffer(state.dyn_geo.bind.index_buffer, &(sg_range) {
-        .ptr = state.dyn_geo.idxs,
-        .size = (wtr.idx - state.dyn_geo.idxs) * sizeof(uint16_t),
-    });
+    geo_wtr_flush(&wtr);
 
     sg_begin_default_pass(&state.pass_action, sapp_width(), sapp_height());
     sg_apply_pipeline(state.pip);
@@ -341,14 +412,23 @@ static void frame(void) {
     float yy = sapp_widthf() / sapp_heightf() / 11.8f;
     float zz = 2.0f / (geo_min_z - geo_max_z);
     float zw = (geo_max_z + geo_min_z) / (geo_min_z - geo_max_z);
-    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(((vs_params_t) {
+    vs_params_t vs_params = {
         .mvp.arr = {
             {   xx, 0.0f, 0.0f, 0.0f },
             { 0.0f,   yy, 0.0f, 0.0f },
             { 0.0f, 0.0f,   zz, 0.0f },
             { 0.0f, 0.0f,   zw, 1.0f },
         }
-    })));
+    };
+    Vec4 trans_cam = mul4x44(vs_params.mvp, (Vec4) {{
+        -state.cam.x,
+        -state.cam.y,
+        0.0f,
+        1.0f
+    }});
+    vs_params.mvp.arr[3][0] = trans_cam.arr[0];
+    vs_params.mvp.arr[3][1] = trans_cam.arr[1];
+    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(vs_params));
 
     sg_apply_bindings(&state.static_geo.bind);
     sg_draw(0, state.static_geo_n_idx, 1);
