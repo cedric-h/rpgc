@@ -3,7 +3,10 @@ sup nerds. this is a rewrite in C of [a game i wrote in rust a while ago](github
 
 ## deps
 `sudo apt-get install libgl-dev libx11-dev libxi-dev libxcursor-dev`
-`git submodule update --init`
+
+`git submodule update --init --depth=1`
+
+`python3 json2flat.py`
 
 ## run
 `./bake.sh && ./build/a.out`
