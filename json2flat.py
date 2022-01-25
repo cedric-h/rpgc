@@ -5,6 +5,7 @@ out = bytearray()
 
 kinds = [
     { "inJson": "trees", "name": "tree", "floats": 2, "fields": ['x', 'y'] },
+    { "inJson": "circles", "name": "circle", "floats": 3, "fields": ['x', 'y', 'radius' ] },
 ]
 
 with open('build/map.h', 'w') as f:
@@ -46,7 +47,11 @@ with open("map.json", "r") as f:
         inJson = data[kd['inJson']]
         out += struct.pack('!L', len(inJson))
         for pl in inJson:
-            out += struct.pack('f'*kd['floats'],  *pl)
+            if type(pl) is dict and pl['pos']:
+                en = pl['pos'] + [pl['radius']]
+            else:
+                en = pl
+            out += struct.pack('f'*kd['floats'],  *en)
 
 with open('build/map.bytes', 'wb') as f:
     f.write(out)

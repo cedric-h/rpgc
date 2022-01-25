@@ -20,7 +20,7 @@
 
 #define vec2(_x, _y) ((Vec2) { .x = (_x), .y = (_y) })
 typedef union { struct { float x, y; }; float arr[2]; } Vec2;
-// static Vec2 sub2(Vec2 a, Vec2 b) { return vec2(a.x-b.x, a.y-b.y); }
+static Vec2 sub2(Vec2 a, Vec2 b) { return vec2(a.x-b.x, a.y-b.y); }
 static Vec2 add2(Vec2 a, Vec2 b) { return vec2(a.x+b.x, a.y+b.y); }
 // static Vec2 sub2f(Vec2 a, float f) { return vec2(a.x-f, a.y-f); }
 static Vec2 div2f(Vec2 a, float f) { return vec2(a.x/f, a.y/f); }
@@ -28,7 +28,7 @@ static Vec2 mul2f(Vec2 a, float f) { return vec2(a.x*f, a.y*f); }
 static float dot2(Vec2 a, Vec2 b) { return a.x*b.x + a.y*b.y; }
 static float mag2(Vec2 a) { return sqrtf(dot2(a, a)); }
 static Vec2 lerp2(Vec2 a, Vec2 b, float t) { return add2(mul2f(a, 1.0f - t), mul2f(b, t)); }
-// static float dist2(Vec2 a, Vec2 b) { return mag2(sub2(a, b)); }
+static float dist2(Vec2 a, Vec2 b) { return mag2(sub2(a, b)); }
 static Vec2 norm2(Vec2 a) { return div2f(a, mag2(a) ?: 1.0f); }
 typedef struct { float arr[4][4]; } Mat4;
 static Mat4 ortho4x4(float left, float right, float bottom, float top, float near, float far) {
@@ -113,17 +113,32 @@ static void geo_find_z_range(Vert *beg, Vert *end) {
         geo_max_z = (i->z > geo_max_z) ? i->z : geo_max_z;
 }
 
+typedef enum {
+    EntMask_Player  = (1 << 0),
+    EntMask_Terrain = (1 << 1),
+} EntMask;
+
+typedef struct Ent Ent;
+struct Ent {
+    uint8_t active;
+    EntMask mask;
+    float radius;
+    Vec2 pos, vel;
+};
+
 /* application state */
 static struct {
     MapData map;
     
     uint8_t keys[SAPP_MAX_KEYCODES];
 
+    Ent ents[1 << 10];
+
     uint64_t frame; /* a sokol_time tick, not one of our game ticks */
     Tick tick;
     double fixed_tick_accumulator;
 
-    struct { Vec2 pos, vel; } player;
+    Ent *player;
     Vec2 cam;
 
     Geo static_geo, dyn_geo;
@@ -132,9 +147,20 @@ static struct {
     sg_pipeline pip;
     sg_pass_action pass_action;
 } state;
+#define ENT_MAX (sizeof(state.ents) / sizeof(state.ents[0]))
+
+#define SYSTEM(e) for (Ent *e = state.ents; (e - state.ents) < ENT_MAX; e++) if (e->active)
+Ent *ent_alloc(void) {
+    for (int i = 0; i < ENT_MAX; i++)
+        if (!state.ents[i].active) {
+            state.ents[i] = (Ent) { .active = true };
+            return state.ents + i;
+        }
+    puts("entity pool exhausted"), exit(1);
+}
+void ent_free(Ent *ent) { ent->active = false; }
 
 stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
-
 
 #define PALETTE \
     X(Color_White,        1.00f, 1.00f, 1.00f, 1.00f) \
@@ -264,6 +290,9 @@ static size_t write_map(Geo *geo) {
 #undef map
 
 static void init(void) {
+    state.player = ent_alloc();
+    state.player->mask = EntMask_Player;
+
     stm_setup();
     sg_setup(&(sg_desc){ .context = sapp_sgcontext() });
 
@@ -273,6 +302,15 @@ static void init(void) {
     geo_bind_init(&state.static_geo, "static_vert", "static_idx", SG_USAGE_IMMUTABLE);
     free(state.static_geo.verts);
     free(state.static_geo.idxs);
+
+#define map (state.map)
+    for (MapData_Circle *t = map.circles; (t - map.circles) < map.ncircles; t++) {
+        Ent *circ = ent_alloc();
+        circ->mask = EntMask_Terrain;
+        circ->radius = t->radius;
+        circ->pos = vec2(t->x, t->y);
+    }
+#undef map
 
     state.dyn_geo = geo_alloc(1 << 15, 1 << 17);
     geo_bind_init(&state.dyn_geo, "dyn_vert", "dyn_idx", SG_USAGE_STREAM);
@@ -359,19 +397,55 @@ static void event(const sapp_event *ev) {
     }
 }
 
+unsigned int positive_inf = 0x7F800000; // 0xFF << 23
+#define POS_INF_F (*(float *)&positive_inf)
+static float scene_distance(Vec2 p, EntMask mask, Ent *ent) {
+    float dist = POS_INF_F;
+
+    SYSTEM(e) {
+        if (e->mask & mask) continue;
+        float this_dist = dist2(p, e->pos) - e->radius;
+        if (this_dist < dist) {
+            dist = this_dist;
+            if (ent) ent = e;
+        }
+    }
+    return dist;
+}
+
+static float raymarch(Vec2 origin, Vec2 dir, EntMask mask, Ent *hit) {
+    float t = 0.0f;
+    for (int iter = 0; iter < 5; iter++) {
+        float d = scene_distance(add2(origin, mul2f(dir, t)), mask, hit);
+        if (d == POS_INF_F) return d;
+        if (d < 0.01f) return t;
+        t += d;
+    }
+    return t;
+}
+
 #define TICK_MS (1000.0f / 60.0f)
 static void tick(void) {
-    state.cam = lerp2(state.cam, add2(state.player.pos, vec2(0.0f, 0.5f)), 0.05f);
+    state.cam = lerp2(state.cam, add2(state.player->pos, vec2(0.0f, 0.5f)), 0.05f);
 
     Vec2 move = {0};
     if (state.keys[SAPP_KEYCODE_W]) move.y += 1.0;
     if (state.keys[SAPP_KEYCODE_S]) move.y -= 1.0;
     if (state.keys[SAPP_KEYCODE_A]) move.x -= 1.0;
     if (state.keys[SAPP_KEYCODE_D]) move.x += 1.0;
-    state.player.vel = add2(state.player.vel, mul2f(norm2(move), 0.0075f));
+    state.player->vel = add2(state.player->vel, mul2f(norm2(move), 0.0075f));
 
-    state.player.pos = add2(state.player.pos, state.player.vel);
-    state.player.vel = mul2f(state.player.vel, 0.93f);
+    SYSTEM(e) {
+        float vel_mag = mag2(e->vel);
+        if (vel_mag <= 0.0f) continue;
+
+        float d = fminf(vel_mag, raymarch(e->pos, e->vel, e->mask, NULL) - e->radius);
+
+        // e->pos = add2(e->pos, mul2f(e->vel, d / vel_mag));
+        printf("%f\n", d);
+        e->pos = add2(e->pos, mul2f(norm2(e->vel), d));
+        e->vel = mul2f(e->vel, 0.93f);
+    }
 }
 
 static void frame(void) {
@@ -385,7 +459,7 @@ static void frame(void) {
     GeoWtr wtr = geo_wtr(&state.dyn_geo); 
 
     { /* push game ents */
-        Vec2 ppos = state.player.pos;
+        Vec2 ppos = state.player->pos;
         write_rect(&wtr, ppos.x, ppos.y, 1.0f, 1.0f, Color_Blue, ppos.y);
 
         geo_find_z_range(state.dyn_geo.verts, wtr.vert);
