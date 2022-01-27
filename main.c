@@ -30,6 +30,7 @@ static float mag2(Vec2 a) { return sqrtf(dot2(a, a)); }
 static Vec2 lerp2(Vec2 a, Vec2 b, float t) { return add2(mul2f(a, 1.0f - t), mul2f(b, t)); }
 static float dist2(Vec2 a, Vec2 b) { return mag2(sub2(a, b)); }
 static Vec2 norm2(Vec2 a) { return div2f(a, mag2(a) ?: 1.0f); }
+static Vec2 refl2(Vec2 d, Vec2 norm) { return sub2(d, mul2f(norm, 2.0f*dot2(d, norm))); }
 typedef struct { float arr[4][4]; } Mat4;
 static Mat4 ortho4x4(float left, float right, float bottom, float top, float near, float far) {
     Mat4 res = {0};
@@ -399,7 +400,7 @@ static void event(const sapp_event *ev) {
 
 unsigned int positive_inf = 0x7F800000; // 0xFF << 23
 #define POS_INF_F (*(float *)&positive_inf)
-static float scene_distance(Vec2 p, EntMask mask, Ent *ent) {
+static float scene_distance(Vec2 p, EntMask mask, Ent **ent) {
     float dist = POS_INF_F;
 
     SYSTEM(e) {
@@ -407,13 +408,13 @@ static float scene_distance(Vec2 p, EntMask mask, Ent *ent) {
         float this_dist = dist2(p, e->pos) - e->radius;
         if (this_dist < dist) {
             dist = this_dist;
-            if (ent) ent = e;
+            if (ent) *ent = e;
         }
     }
     return dist;
 }
 
-static float raymarch(Vec2 origin, Vec2 dir, EntMask mask, Ent *hit) {
+static float raymarch(Vec2 origin, Vec2 dir, EntMask mask, Ent **hit) {
     float t = 0.0f;
     for (int iter = 0; iter < 5; iter++) {
         float d = scene_distance(add2(origin, mul2f(dir, t)), mask, hit);
@@ -439,10 +440,17 @@ static void tick(void) {
         float vel_mag = mag2(e->vel);
         if (vel_mag <= 0.0f) continue;
 
-        float d = fminf(vel_mag, raymarch(e->pos, e->vel, e->mask, NULL) - e->radius);
+        float d;
+        Ent *closest_ent;
+        float closest_dist = raymarch(e->pos, e->vel, e->mask, &closest_ent) - e->radius;
+        if (closest_dist <= 0.0f) {
+            e->vel = mul2f(refl2(norm2(e->vel), norm2(sub2(e->pos, closest_ent->pos))), vel_mag);
+            d = vel_mag;
+        } else {
+            d = fminf(vel_mag, closest_dist);
+        }
 
         // e->pos = add2(e->pos, mul2f(e->vel, d / vel_mag));
-        printf("%f\n", d);
         e->pos = add2(e->pos, mul2f(norm2(e->vel), d));
         e->vel = mul2f(e->vel, 0.93f);
     }
