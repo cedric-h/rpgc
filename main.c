@@ -30,6 +30,24 @@ static float mag2(Vec2 a) { return sqrtf(dot2(a, a)); }
 static Vec2 lerp2(Vec2 a, Vec2 b, float t) { return add2(mul2f(a, 1.0f - t), mul2f(b, t)); }
 // static float dist2(Vec2 a, Vec2 b) { return mag2(sub2(a, b)); }
 static Vec2 norm2(Vec2 a) { return div2f(a, mag2(a) ?: 1.0f); }
+
+typedef struct { float arr[2][2]; } Mat2;
+static Mat2 z_rot2x2(float rads) {
+    float sin = sinf(rads), cos = cosf(rads);
+    return (Mat2) {
+        .arr = {
+            {  cos,  sin },
+            { -sin,  cos },
+        }
+    };
+}
+static Vec2 mul2x22(Mat2 m, Vec2 v) {
+  return vec2(
+      m.arr[0][0] * v.arr[0] + m.arr[1][0] * v.arr[1],
+      m.arr[0][1] * v.arr[0] + m.arr[1][1] * v.arr[1]
+  );
+}
+
 typedef struct { float arr[4][4]; } Mat4;
 static Mat4 ortho4x4(float left, float right, float bottom, float top, float near, float far) {
     Mat4 res = {0};
@@ -139,9 +157,12 @@ stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
 #define PALETTE \
     X(Color_White,        1.00f, 1.00f, 1.00f, 1.00f) \
     X(Color_Brown,        0.50f, 0.42f, 0.31f, 1.00f) \
+    X(Color_DarkBrown,    0.30f, 0.25f, 0.18f, 1.00f) \
     X(Color_Blue,         0.00f, 0.47f, 0.95f, 1.00f) \
     X(Color_Red,          0.90f, 0.16f, 0.22f, 1.00f) \
     X(Color_Green,        0.00f, 0.89f, 0.19f, 1.00f) \
+    X(Color_Grey,         0.51f, 0.51f, 0.51f, 1.00f) \
+    X(Color_DarkGrey,     0.31f, 0.31f, 0.31f, 1.00f) \
     X(Color_Yellow,       0.99f, 0.98f, 0.00f, 1.00f) \
     X(Color_ForestShadow, 0.18f, 0.43f, 0.36f, 1.00f) \
     X(Color_TreeBorder,   0.00f, 0.42f, 0.13f, 1.00f) \
@@ -210,6 +231,17 @@ static void write_circ(GeoWtr *wtr, float x, float y, float r, Color clr, float 
 }
 
 
+static void write_tri(GeoWtr *wtr, Vert v0, Vert v1, Vert v2) {
+    size_t start = wtr->vert - wtr->geo->verts;
+    *(wtr->vert)++ = v0;
+    *(wtr->vert)++ = v1;
+    *(wtr->vert)++ = v2;
+
+    *(wtr->idx)++ = start + 0;
+    *(wtr->idx)++ = start + 1;
+    *(wtr->idx)++ = start + 2;
+}
+
 static void write_quad(GeoWtr *wtr, Vert v0, Vert v1, Vert v2, Vert v3) {
     size_t start = wtr->vert - wtr->geo->verts;
     *(wtr->vert)++ = v0;
@@ -235,12 +267,46 @@ static void write_rect(GeoWtr *wtr, float x, float y, float w, float h, Color cl
     );
 }
 
+#define GOLDEN_RATIO (1.618034f)
+static void write_sword(GeoWtr *wtr, float rads, float x, float y, float z) {
+    Vert *start = wtr->vert;
+    write_tri(wtr,
+        (Vert) {  0.075f,         0.0f, z, Color_DarkBrown },
+        (Vert) { -0.075f,         0.0f, z, Color_DarkBrown },
+        (Vert) { -0.075f, GOLDEN_RATIO, z, Color_DarkBrown }
+    );
+    write_tri(wtr,
+        (Vert) {  0.0f, GOLDEN_RATIO, z, Color_Grey },
+        (Vert) {  0.1f,        0.35f, z, Color_Grey },
+        (Vert) {  0.2f,        1.35f, z, Color_Grey }
+    );
+    write_tri(wtr,
+        (Vert) {  0.0f, GOLDEN_RATIO, z, Color_Grey },
+        (Vert) { -0.1f,        0.35f, z, Color_Grey },
+        (Vert) { -0.2f,        1.35f, z, Color_Grey }
+    );
+    write_tri(wtr,
+        (Vert) { -0.1f,        0.35f, z, Color_Grey },
+        (Vert) {  0.1f,        0.35f, z, Color_Grey },
+        (Vert) {  0.0f, GOLDEN_RATIO, z, Color_Grey }
+    );
+    float t = 0.135f, w = 0.225f;
+    write_rect(wtr, 0.0f, 0.4f - t, 2.0f * w, t, Color_DarkGrey, z);
+
+    Mat2 m = z_rot2x2(rads);
+    for (Vert *i = start; i < wtr->vert; i++) {
+        Vec2 p = mul2x22(m, vec2(i->x, i->y));
+        i->x = x + p.x;
+        i->y = y + p.y;
+    }
+}
+
 #define map (state.map)
 static size_t write_map(Geo *geo) {
     GeoWtr wtr = geo_wtr(geo); 
 
     for (MapData_Tree *t = map.trees; (t - map.trees) < map.ntrees; t++) {
-        float w = 0.8f, h = 1.618034f, r = 0.4f;
+        float w = 0.8f, h = GOLDEN_RATIO, r = 0.4f;
         write_circ(&wtr, t->x, t->y + r, r, Color_Brown, t->y);
         write_rect(&wtr, t->x, t->y + r, w, h, Color_Brown, t->y);
 
@@ -377,7 +443,9 @@ static void tick(void) {
 static void frame(void) {
     double elapsed = stm_ms(stm_laptime(&state.frame));
     state.fixed_tick_accumulator += elapsed;
+    static int tickn = 0;
     while (state.fixed_tick_accumulator > TICK_MS) {
+        tickn++;
         state.fixed_tick_accumulator -= TICK_MS;
         tick();
     }
@@ -387,6 +455,7 @@ static void frame(void) {
     { /* push game ents */
         Vec2 ppos = state.player.pos;
         write_rect(&wtr, ppos.x, ppos.y, 1.0f, 1.0f, Color_Blue, ppos.y);
+        write_sword(&wtr, tickn * 0.003f, ppos.x, ppos.y, ppos.y);
 
         geo_find_z_range(state.dyn_geo.verts, wtr.vert);
     }
