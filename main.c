@@ -28,6 +28,7 @@ static float lerp_rads(float a, float b, float t) {
 #define vec2(_x, _y) ((Vec2) { .x = (_x), .y = (_y) })
 typedef union { struct { float x, y; }; float arr[2]; } Vec2;
 static float vec2_rads(Vec2 a) { return atan2f(a.y, a.x); }
+static Vec2 rads2(float r) { return vec2(cosf(r), sinf(r)); }
 static Vec2 sub2(Vec2 a, Vec2 b) { return vec2(a.x-b.x, a.y-b.y); }
 static Vec2 add2(Vec2 a, Vec2 b) { return vec2(a.x+b.x, a.y+b.y); }
 // static Vec2 sub2f(Vec2 a, float f) { return vec2(a.x-f, a.y-f); }
@@ -141,18 +142,55 @@ static void geo_find_z_range(Vert *beg, Vert *end) {
         geo_max_z = (i->z > geo_max_z) ? i->z : geo_max_z;
 }
 
+/* Entity Index - generationally indexed entity pointer */
+typedef struct { uint32_t idx, gen; } Edx;
+
+#define WAFFLE_NSLOT (8)
+#define WAFFLE_SLOT_OCCUPANCY_DIST (0.5f)
+typedef struct {
+    Edx slots[WAFFLE_NSLOT];
+    Edx attacker;
+} Waffle;
+
 typedef enum {
     EntMask_Player  = (1 << 0),
     EntMask_Terrain = (1 << 1),
+    EntMask_Enemy   = (1 << 2),
 } EntMask;
+
+typedef enum {
+    EntLooks_None,
+    EntLooks_Player,
+    EntLooks_Pot,
+} EntLooks;
+
+typedef enum {
+    EntItem_None,
+    EntItem_Sword,
+} EntItem;
 
 #define SWING_DURATION 50
 typedef struct Ent Ent;
 struct Ent {
+    /* bookkeeping */
     uint8_t active;
-    EntMask mask;
+    uint32_t gen;
+
+    /* appearance */
+    EntLooks looks;
+
+    /* combat */
+    uint8_t hp;
+    uint8_t hostile;
+    uint8_t aggroed;
+
+    /* physics */
     float radius;
+    EntMask has_mask, hit_mask, item_hit_mask;
     Vec2 pos, vel;
+
+    /* held item */
+    EntItem item;
     struct { Tick end; Vec2 toward; } swing;
 };
 
@@ -169,6 +207,7 @@ static struct {
     double fixed_tick_accumulator;
 
     Ent *player;
+    Waffle waffle;
     Vec2 cam;
 
     Geo static_geo, dyn_geo;
@@ -180,15 +219,113 @@ static struct {
 #define ENT_MAX (sizeof(state.ents) / sizeof(state.ents[0]))
 
 #define SYSTEM(e) for (Ent *e = state.ents; (e - state.ents) < ENT_MAX; e++) if (e->active)
-Ent *ent_alloc(void) {
+static Ent *ent_alloc(void) {
     for (int i = 0; i < ENT_MAX; i++)
         if (!state.ents[i].active) {
-            state.ents[i] = (Ent) { .active = true, .swing.toward.x = 1.0f };
+            state.ents[i] = (Ent) {
+                .active = 1,
+                .gen = state.ents[i].gen,
+                .swing.toward.x = 1.0f
+            };
             return state.ents + i;
         }
     puts("entity pool exhausted"), exit(1);
 }
-void ent_free(Ent *ent) { ent->active = false; }
+static void ent_free(Ent *ent) {
+    ent->gen++;
+    ent->active = 0;
+}
+
+static float ent_speed(Ent *e) {
+    return (e->vel.x == 0.0f || signum(e->vel.x) == signum(e->swing.toward.x))
+        ? 0.0075f
+        : 0.0045f;
+}
+
+static Edx edx_from(Ent *ent) {
+    return (Edx) { .idx = (ent - state.ents) + 1, .gen = ent->gen };
+}
+static Ent *edx_deref(Edx edx) {
+    return (edx.idx > 0 && edx.gen == state.ents[edx.idx-1].gen)
+        ? (state.ents + edx.idx - 1)
+        : NULL;
+}
+
+static Vec2 waffle_slot_pos(int slot_i) {
+    float angle = ((float)slot_i / (float)WAFFLE_NSLOT) * M_PI * 2.0f;
+    return add2(state.player->pos, mul2f(rads2(angle), 2.0f));
+}
+
+static void waffle_update(Waffle *waffle) {
+    Ent *attacker = edx_deref(waffle->attacker);
+
+    if (state.player->gen > 0) return;
+
+    SYSTEM(e) {
+        if (!e->hostile || e == attacker) continue;
+
+        if (dist2(e->pos, state.player->pos) < 5.0f)
+            e->aggroed = 1;
+
+        if (!e->aggroed) continue;
+
+        /* find the closest slot */
+        Vec2 close_slot;
+        int close_slot_i;
+        float slot_dist = 20.0f;
+        for (int i = 0; i < WAFFLE_NSLOT; i++) {
+            Ent *slot_e = edx_deref(waffle->slots[i]);
+            if (slot_e && slot_e != e) continue;
+
+            Vec2 slot_pos = waffle_slot_pos(i);
+            float to_slot = dist2(slot_pos, e->pos);
+            if (to_slot < slot_dist)
+                slot_dist = to_slot,
+                close_slot = slot_pos,
+                close_slot_i = i;
+        }
+
+        /* be propelled toward it */
+        if (slot_dist > 0.1f && slot_dist < 20.0f) {
+            Vec2 delta = sub2(close_slot, e->pos);
+            float del_mag = mag2(delta);
+            float speed = fminf(del_mag, ent_speed(e) * 0.9f);
+            delta = div2f(delta, del_mag);
+            e->vel = add2(e->vel, mul2f(delta, speed));
+            e->swing.toward = delta;
+        }
+
+        /* claim it if you're close enough */
+        if (slot_dist < WAFFLE_SLOT_OCCUPANCY_DIST) {
+            waffle->slots[close_slot_i] = edx_from(e);
+            e->swing.toward = norm2(sub2(state.player->pos, e->pos));
+        }
+    }
+
+    for (int i = 0; i < WAFFLE_NSLOT; i++) {
+        Ent *slot_e = edx_deref(waffle->slots[i]);
+        if (!slot_e || slot_e == attacker) continue;
+
+        /* unclaim slots with distant owners */
+        if (dist2(slot_e->pos, waffle_slot_pos(i)) > WAFFLE_SLOT_OCCUPANCY_DIST) {
+            waffle->slots[i] = (Edx) {0};
+            continue;
+        }
+
+        /* if nobody is attacking yet, well shucks, guess I oughta! */
+        if (!attacker) {
+            waffle->attacker = edx_from(slot_e);
+            attacker = slot_e;
+            slot_e->swing.end = state.tick + SWING_DURATION;
+        }
+    }
+
+    if (attacker) {
+        if (state.tick > attacker->swing.end)
+            waffle->attacker = (Edx) {0};
+    }
+}
+
 
 stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
 
@@ -323,13 +460,26 @@ static void write_quad(GeoWtr *wtr, Vert v0, Vert v1, Vert v2, Vert v3) {
 }
 
 static void write_rect(GeoWtr *wtr, float x, float y, float w, float h, Color clr, float z) {
-    write_quad(
-        wtr,
+    write_quad(wtr,
         (Vert) { x - w/2.0f, y    , z, clr },
         (Vert) { x + w/2.0f, y    , z, clr },
         (Vert) { x + w/2.0f, y + h, z, clr },
         (Vert) { x - w/2.0f, y + h, z, clr }
     );
+}
+
+static void _write_pot_inr(GeoWtr *wtr, float x, float y, float size, float scale, Color clr, float z) {
+#define POT_RATIO (0.7f)
+    write_circ(wtr, x, y, scale/2.0f, clr, z);
+    write_rect(wtr, x, y, scale, size * POT_RATIO, clr, z);
+    write_circ(wtr, x, y + size * POT_RATIO, scale/2.0f, clr, z);
+    write_rect(wtr, x, y + size * 0.9f, scale - 0.24f, scale * 0.5f, clr, z);
+#undef POT_RATIO
+}
+
+static void write_pot(GeoWtr *wtr, float x, float y, float size) {
+    _write_pot_inr(wtr, x, y, size, size, Color_DarkBrown, y);
+    _write_pot_inr(wtr, x, y, size, size - 0.15f, Color_Brown, y - 0.01f);
 }
 
 #define GOLDEN_RATIO (1.618034f)
@@ -338,7 +488,7 @@ static void write_sword(GeoWtr *wtr, float rads, float x, float y, float z) {
     write_tri(wtr,
         (Vert) {  0.075f,         0.0f, z, Color_DarkBrown },
         (Vert) { -0.075f,         0.0f, z, Color_DarkBrown },
-        (Vert) { -0.075f, GOLDEN_RATIO, z, Color_DarkBrown }
+        (Vert) {  0.000f, GOLDEN_RATIO, z, Color_DarkBrown }
     );
     write_tri(wtr,
         (Vert) {  0.0f, GOLDEN_RATIO, z, Color_Grey },
@@ -385,7 +535,7 @@ static size_t write_map(Geo *geo) {
         write_circ(&wtr, t->x - 0.80f, t->y + 2.5f, 0.9f+0.1f, Color_TreeBorder, t->y);
         write_circ(&wtr, t->x - 0.16f, t->y + 2.0f, 0.8f+0.1f, Color_TreeBorder, t->y);
 
-        float sr = 0.82f;
+        float sr = 0.92f;
         write_circ(&wtr, t->x, t->y + r, sr, Color_ForestShadow, t->y + sr);
     }
 
@@ -396,7 +546,28 @@ static size_t write_map(Geo *geo) {
 
 static void init(void) {
     state.player = ent_alloc();
-    state.player->mask = EntMask_Player;
+    state.player->has_mask = EntMask_Player;
+    state.player->hit_mask = ~EntMask_Player;
+    state.player->item_hit_mask = EntMask_Enemy;
+    state.player->looks = EntLooks_Player;
+    state.player->item = EntItem_Sword;
+
+    struct { float x, y, radius; } pots[] = {
+        { 3.0f, 3.0f, 0.6f },
+        { 5.0f, 2.0f, 0.7f },
+        { 4.0f, 5.0f, 0.5f },
+    };
+    for (int i = 0; i < sizeof(pots) / sizeof(pots[0]); i++) {
+        Ent *pot = ent_alloc();
+        pot->pos = vec2(pots[i].x, pots[i].y);
+        pot->radius = pots[i].radius;
+        pot->looks = EntLooks_Pot;
+        pot->item = EntItem_Sword;
+        pot->has_mask = EntMask_Enemy;
+        pot->hit_mask = ~0;
+        pot->item_hit_mask = EntMask_Player;
+        pot->hostile = 1;
+    }
 
     stm_setup();
     sg_setup(&(sg_desc){ .context = sapp_sgcontext() });
@@ -411,7 +582,8 @@ static void init(void) {
 #define map (state.map)
     for (MapData_Circle *t = map.circles; (t - map.circles) < map.ncircles; t++) {
         Ent *circ = ent_alloc();
-        circ->mask = EntMask_Terrain;
+        circ->has_mask = EntMask_Terrain;
+        circ->hit_mask = 0;
         circ->radius = t->radius;
         circ->pos = vec2(t->x, t->y);
     }
@@ -514,11 +686,13 @@ static void event(const sapp_event *ev) {
 
 unsigned int positive_inf = 0x7F800000; // 0xFF << 23
 #define POS_INF_F (*(float *)&positive_inf)
-static float scene_distance(Vec2 p, EntMask mask, Ent **ent) {
+static float scene_distance(Vec2 p, Ent *exclude, EntMask hit_mask, Ent **ent) {
     float dist = POS_INF_F;
 
     SYSTEM(e) {
-        if (e->mask & mask) continue;
+        if (!(e->has_mask & hit_mask)) continue;
+        if (e == exclude) continue;
+
         float this_dist = dist2(p, e->pos) - e->radius;
         if (this_dist < dist) {
             dist = this_dist;
@@ -528,16 +702,82 @@ static float scene_distance(Vec2 p, EntMask mask, Ent **ent) {
     return dist;
 }
 
-static float raymarch(Vec2 origin, Vec2 dir, EntMask mask, Ent **hit) {
+static float raymarch(Vec2 origin, Vec2 dir, Ent *exclude, EntMask hit_mask, Ent **hit) {
     float t = 0.0f;
     for (int iter = 0; iter < 5; iter++) {
-        float d = scene_distance(add2(origin, mul2f(dir, t)), mask, hit);
+        float d = scene_distance(add2(origin, mul2f(dir, t)), exclude, hit_mask, hit);
         if (d == POS_INF_F) return d;
         if (d < 0.01f) return t;
         t += d;
     }
     return t;
 }
+
+static float raymarch_ent(Ent *ent, Ent **hit) {
+    return raymarch(ent->pos, ent->vel, ent, ent->hit_mask, hit);
+}
+
+static void ent_item_transform(Ent *e, float *out_rot, Vec2 *out_pos, uint8_t *out_dmg) {
+    Vec2 center = vec2(0.0f, 0.5f);
+    Vec2 hand_pos = add2(center, mul2f(e->swing.toward, 0.5f));
+    float rot = vec2_rads(e->swing.toward) - M_PI_2;
+    float dir = signum(e->swing.toward.x);
+
+    float rest_rot;
+    Vec2 rest_pos;
+    {
+        float vl = mag2(e->vel);
+        float tickf = state.tick;
+        float drag = fminf(vl, 0.07f);
+        float breathe = sinf(tickf / 35.0f) / 30.0f;
+        float jog = sinf(tickf / 6.85f) * fminf(vl, 0.175f);
+        rest_rot = (M_PI_2 + breathe + jog) * -dir;
+        rest_pos.x = (0.55 + breathe / 3.2 + jog * 1.5 + drag) * -dir;
+        rest_pos.y = 0.35 + (breathe + jog) / 2.8 + drag * 0.5;
+    }
+
+    *out_rot = rest_rot;
+    *out_pos = rest_pos;
+    if (out_dmg) *out_dmg = 0;
+
+    float time = (e->swing.end - state.tick) / ((float) SWING_DURATION);
+    if (time > 0.0f) {
+        typedef enum {
+            KF_Rotates = (1 << 1),
+            KF_Moves   = (1 << 2),
+            KF_Damages = (1 << 3),
+        } KF_Flag;
+        typedef struct { float duration; KF_Flag flags; float rot; Vec2 pos; } KF;
+
+        float swing = 0.5f * dir;
+        KF frames[] = {
+            { 0.2174f,              KF_Rotates | KF_Moves, rot - swing * 1.0, hand_pos },
+            { 0.2304f,              KF_Rotates           , rot - swing * 2.0           },
+            { 0.0870f, KF_Damages | KF_Rotates           , rot + swing * 2.0           },
+            { 0.2478f,              KF_Rotates           , rot + swing * 3.0           },
+            { 0.2174f,              KF_Rotates | KF_Moves,          rest_rot, rest_pos },
+        };
+
+        for (KF *f = frames; (f - frames) < sizeof(frames) / sizeof(frames[0]); f++) {
+            if (time > f->duration) {
+                time -= f->duration;
+                if (f->flags & KF_Rotates) *out_rot = f->rot;
+                if (f->flags & KF_Moves) *out_pos = f->pos;
+                continue;
+            };
+
+            float t = time / f->duration;
+            if (f->flags & KF_Rotates) *out_rot = lerp_rads(*out_rot, f->rot, t);
+            if (f->flags & KF_Moves) *out_pos = lerp2(*out_pos, f->pos, t);
+            if (f->flags & KF_Damages && out_dmg) *out_dmg = 1;
+            break;
+        }
+    }
+
+    out_pos->x += e->pos.x;
+    out_pos->y += e->pos.y;
+}
+
 
 #define TICK_MS (1000.0f / 60.0f)
 static void tick(void) {
@@ -550,19 +790,31 @@ static void tick(void) {
     if (state.keys[SAPP_KEYCODE_S]) move.y -= 1.0;
     if (state.keys[SAPP_KEYCODE_A]) move.x -= 1.0;
     if (state.keys[SAPP_KEYCODE_D]) move.x += 1.0;
-    float speed = (
-        state.player->vel.x == 0.0f ||
-            signum(state.player->vel.x) == signum(state.player->swing.toward.x)
-        ) ? 0.0075f : 0.0045f;
+    float speed = ent_speed(state.player);
     state.player->vel = add2(state.player->vel, mul2f(norm2(move), speed));
 
+    waffle_update(&state.waffle);
+
     SYSTEM(e) {
+        if (e->item) {
+            float item_rot;
+            Vec2 item_pos;
+            uint8_t item_dmg;
+            ent_item_transform(e, &item_rot, &item_pos, &item_dmg);
+            if (item_dmg) {
+                Vec2 dir = rads2(item_rot + M_PI_2);
+                Ent *hit;
+                if (raymarch(item_pos, dir, NULL, e->item_hit_mask, &hit) < 1.5f)
+                    ent_free(hit);
+            }
+        }
+
         float vel_mag = mag2(e->vel);
         if (vel_mag <= 0.0f) continue;
 
         float d;
         Ent *closest_ent;
-        float closest_dist = raymarch(e->pos, e->vel, e->mask, &closest_ent) - e->radius;
+        float closest_dist = raymarch_ent(e, &closest_ent) - e->radius;
         if (closest_dist <= 0.0f) {
             e->vel = mul2f(refl2(norm2(e->vel), norm2(sub2(e->pos, closest_ent->pos))), vel_mag);
             d = vel_mag;
@@ -586,69 +838,25 @@ static void frame(void) {
 
     GeoWtr wtr = geo_wtr(&state.dyn_geo); 
 
-    { /* push game ents */
-        Ent *e = state.player;
-        Vec2 ppos = e->pos;
-        write_rect(&wtr, ppos.x, ppos.y, 1.0f, 1.0f, Color_Blue, ppos.y);
+    SYSTEM(e) { /* push game ents */
+        if (!e->looks) continue;
 
-        Vec2 center = vec2(0.0f, 0.5f);
-        Vec2 hand_pos = add2(center, mul2f(e->swing.toward, 0.5f));
-        float rot = vec2_rads(e->swing.toward) - M_PI_2;
-        float dir = signum(e->swing.toward.x);
-
-        float rest_rot;
-        Vec2 rest_pos;
-        {
-            float vl = mag2(state.player->vel);
-            float tickf = state.tick;
-            float drag = fminf(vl, 0.07f);
-            float breathe = sinf(tickf / 35.0f) / 30.0f;
-            float jog = sinf(tickf / 6.85f) * fminf(vl, 0.175f);
-            rest_rot = (M_PI_2 + breathe + jog) * -dir;
-            rest_pos.x = (0.55 + breathe / 3.2 + jog * 1.5 + drag) * -dir;
-            rest_pos.y = 0.35 + (breathe + jog) / 2.8 + drag * 0.5;
+        switch (e->looks) {
+            case EntLooks_None: break;
+            case EntLooks_Player: {
+                write_rect(&wtr, e->pos.x, e->pos.y, 1.0f, 1.0f, Color_Blue, e->pos.y);
+            } break;
+            case EntLooks_Pot: {
+                write_pot(&wtr, e->pos.x, e->pos.y, e->radius);
+            } break;
         }
 
-        typedef enum {
-            KF_Rotates = (1 << 1),
-            KF_Moves   = (1 << 2),
-            KF_Damages = (1 << 3),
-        } KF_Flag;
-        typedef struct { float duration; KF_Flag flags; float rot; Vec2 pos; } KF;
-
-        float swing = 0.5f * dir;
-        KF frames[] = {
-            { 0.2174f,              KF_Rotates | KF_Moves, rot - swing * 1.0, hand_pos },
-            { 0.2304f,              KF_Rotates           , rot - swing * 2.0           },
-            { 0.0870f, KF_Damages | KF_Rotates           , rot + swing * 2.0           },
-            { 0.2478f,              KF_Rotates           , rot + swing * 3.0           },
-            { 0.2174f,              KF_Rotates | KF_Moves,          rest_rot, rest_pos },
-        };
-
-        float sword_rot = rest_rot;
-        Vec2 sword_pos = rest_pos;
-
-        float time = (e->swing.end - state.tick) / ((float) SWING_DURATION);
-        if (time > 0.0f) {
-            for (KF *f = frames; (f - frames) < sizeof(frames) / sizeof(frames[0]); f++) {
-
-                if (time > f->duration) {
-                    time -= f->duration;
-                    if (f->flags & KF_Rotates) sword_rot = f->rot;
-                    if (f->flags & KF_Moves) sword_pos = f->pos;
-                    continue;
-                };
-
-                float t = time / f->duration;
-                if (f->flags & KF_Rotates) sword_rot = lerp_rads(sword_rot, f->rot, t);
-                if (f->flags & KF_Moves) sword_pos = lerp2(sword_pos, f->pos, t);
-                break;
-            }
+        if (e->item) {
+            float item_rot;
+            Vec2 item_pos;
+            ent_item_transform(e, &item_rot, &item_pos, NULL);
+            write_sword(&wtr, item_rot, item_pos.x, item_pos.y, item_pos.y - 1.0f);
         }
-
-        sword_pos.x += ppos.x;
-        sword_pos.y += ppos.y;
-        write_sword(&wtr, sword_rot, sword_pos.x, sword_pos.y, sword_pos.y - 1.0f);
 
         geo_find_z_range(state.dyn_geo.verts, wtr.vert);
     }
@@ -706,8 +914,8 @@ sapp_desc sokol_main(int argc, char* argv[]) {
         .frame_cb = frame,
         .cleanup_cb = cleanup,
         .event_cb = event,
-        .width = 640,
-        .height = 480,
+        .width = 1280,
+        .height = 720,
         .gl_force_gles2 = true,
         .window_title = "rpgc",
         .icon.sokol_default = true,
