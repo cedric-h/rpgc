@@ -199,6 +199,7 @@ static struct {
     MapData map;
     
     uint8_t keys[SAPP_MAX_KEYCODES];
+    struct { uint8_t active; Vec2 pos; } aimer;
 
     Ent ents[1 << 10];
 
@@ -335,6 +336,8 @@ stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
     X(Color_DarkBrown,    0.30f, 0.25f, 0.18f, 1.00f) \
     X(Color_Blue,         0.00f, 0.47f, 0.95f, 1.00f) \
     X(Color_Red,          0.90f, 0.16f, 0.22f, 1.00f) \
+    X(Color_Maroon,       0.75f, 0.13f, 0.22f, 1.00f) \
+    X(Color_DarkMaroon,   0.55f, 0.03f, 0.12f, 1.00f) \
     X(Color_Green,        0.00f, 0.89f, 0.19f, 1.00f) \
     X(Color_Grey,         0.51f, 0.51f, 0.51f, 1.00f) \
     X(Color_DarkGrey,     0.31f, 0.31f, 0.31f, 1.00f) \
@@ -432,7 +435,6 @@ static void write_circ(GeoWtr *wtr, float x, float y, float r, Color clr, float 
     *(wtr->vert)++ = (Vert) { x + r *  0.6428f, y + r *  0.7660f, z, clr };
 }
 
-
 static void write_tri(GeoWtr *wtr, Vert v0, Vert v1, Vert v2) {
     size_t start = wtr->vert - wtr->geo->verts;
     *(wtr->vert)++ = v0;
@@ -466,6 +468,48 @@ static void write_rect(GeoWtr *wtr, float x, float y, float w, float h, Color cl
         (Vert) { x + w/2.0f, y + h, z, clr },
         (Vert) { x - w/2.0f, y + h, z, clr }
     );
+}
+
+static void write_sight(GeoWtr *wtr, float x, float y, float r, Color clr, float z) {
+    size_t start = wtr->vert - wtr->geo->verts;
+    uint16_t circ_indices[] = {
+        5 + start, 13 + start,  6 + start,
+        3 + start, 11 + start,  4 + start,
+        1 + start,  9 + start,  2 + start,
+        6 + start,  7 + start,  0 + start,
+        4 + start, 12 + start,  5 + start,
+        3 + start,  9 + start, 10 + start,
+        0 + start,  8 + start,  1 + start,
+        5 + start, 12 + start, 13 + start,
+        3 + start, 10 + start, 11 + start,
+        1 + start,  8 + start,  9 + start,
+        6 + start, 13 + start,  7 + start,
+        4 + start, 11 + start, 12 + start,
+        3 + start,  2 + start,  9 + start,
+        0 + start,  7 + start,  8 + start
+    };
+    memcpy(wtr->idx, circ_indices, sizeof(circ_indices));
+    wtr->idx += sizeof(circ_indices) / sizeof(uint16_t);
+
+    *(wtr->vert)++ = (Vert) { x + r *  0.3405f, y + r *  0.9402f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r * -0.5228f, y + r *  0.8524f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r * -0.9924f, y + r *  0.1227f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r * -0.7147f, y + r * -0.6994f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.1012f, y + r * -0.9949f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.8409f, y + r * -0.5412f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.9474f, y + r *  0.3200f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.2554f, y + r *  0.7053f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r * -0.3922f, y + r *  0.6395f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r * -0.7445f, y + r *  0.0921f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r * -0.5362f, y + r * -0.5246f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.0759f, y + r * -0.7463f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.6308f, y + r * -0.4060f, z, clr };
+    *(wtr->vert)++ = (Vert) { x + r *  0.7107f, y + r *  0.2401f, z, clr };
+
+    write_rect(wtr, x + r - 0.2f*r, y - 0.125f*r, 1.0f*r, 0.25f*r, clr, z);
+    write_rect(wtr, x - r + 0.2f*r, y - 0.125f*r, 1.0f*r, 0.25f*r, clr, z);
+    write_rect(wtr, x, y + r - 0.7f*r, 0.25f*r, 1.0f*r, clr, z);
+    write_rect(wtr, x, y - r - 0.3f*r, 0.25f*r, 1.0f*r, clr, z);
 }
 
 static void _write_pot_inr(GeoWtr *wtr, float x, float y, float size, float scale, Color clr, float z) {
@@ -592,7 +636,7 @@ static void init(void) {
     state.dyn_geo = geo_alloc(1 << 15, 1 << 17);
     geo_bind_init(&state.dyn_geo, "dyn_vert", "dyn_idx", SG_USAGE_STREAM);
 
-    uint8_t palette[4*4*4] = {0}, *plt_wtr = palette;
+    uint8_t palette[8*8*4] = {0}, *plt_wtr = palette;
 
 #define X(name, r, g, b, a) \
     *plt_wtr++ = (uint8_t)(r * 255.0); \
@@ -605,8 +649,8 @@ static void init(void) {
     /* NOTE: tex_slot is provided by shader code generation */
     state.static_geo.bind.fs_images[SLOT_palette] =
     state.dyn_geo.bind.fs_images[SLOT_palette] = sg_make_image(&(sg_image_desc){
-        .width = 4,
-        .height = 4,
+        .width = 8,
+        .height = 8,
         .data.subimage[0][0] = SG_RANGE(palette),
         .label = "palette-texture"
     });
@@ -662,6 +706,14 @@ static void init(void) {
     };
 }
 
+static int ent_can_swing(Ent *e, Vec2 toward) {
+    int can_swing = state.tick > e->swing.end;
+    if (can_swing)
+        e->swing.end = state.tick + SWING_DURATION,
+        e->swing.toward = norm2(toward);
+    return can_swing;
+}
+
 static void event(const sapp_event *ev) {
     switch (ev->type) {
     case SAPP_EVENTTYPE_KEY_UP:
@@ -669,16 +721,23 @@ static void event(const sapp_event *ev) {
         state.keys[ev->key_code] = ev->type == SAPP_EVENTTYPE_KEY_DOWN;
         if (ev->key_code == SAPP_KEYCODE_ESCAPE)
             sapp_request_quit();
+        else if (ev->key_code == SAPP_KEYCODE_SPACE) {
+            if (ev->type == SAPP_EVENTTYPE_KEY_UP && state.aimer.active) {
+                if (ent_can_swing(state.player, norm2(state.aimer.pos)))
+                    state.aimer.active = 0;
+            } else if (!state.aimer.active && state.tick > state.player->swing.end) {
+                state.aimer.active = 1,
+                state.aimer.pos = vec2(0.0f, 0.0f);
+            }
+        }
     } break;
     case SAPP_EVENTTYPE_MOUSE_DOWN: {
         Vec2 cam = state.cam;
         float ar = sapp_widthf() / sapp_heightf(); /* aspect ratio */
         float x = -(1.0f - ev->mouse_x / sapp_widthf()  * 2.0f) * GAME_SCALE        + cam.x;
         float y =  (1.0f - ev->mouse_y / sapp_heightf() * 2.0f) * (GAME_SCALE / ar) + cam.y;
-        if (state.tick > state.player->swing.end) {
-            state.player->swing.end = state.tick + SWING_DURATION;
-            state.player->swing.toward = norm2(sub2(vec2(x, y), state.player->pos));
-        }
+        if (state.tick > state.player->swing.end)
+            ent_can_swing(state.player, norm2(sub2(vec2(x, y), state.player->pos)));
     } break;
     default: {}
     }
@@ -721,7 +780,7 @@ static void ent_item_transform(Ent *e, float *out_rot, Vec2 *out_pos, uint8_t *o
     Vec2 center = vec2(0.0f, 0.5f);
     Vec2 hand_pos = add2(center, mul2f(e->swing.toward, 0.5f));
     float rot = vec2_rads(e->swing.toward) - M_PI_2;
-    float dir = signum(e->swing.toward.x);
+    float dir = signum(e->swing.toward.x) ?: 1.0f;
 
     float rest_rot;
     Vec2 rest_pos;
@@ -790,8 +849,11 @@ static void tick(void) {
     if (state.keys[SAPP_KEYCODE_S]) move.y -= 1.0;
     if (state.keys[SAPP_KEYCODE_A]) move.x -= 1.0;
     if (state.keys[SAPP_KEYCODE_D]) move.x += 1.0;
+    move = norm2(move);
     float speed = ent_speed(state.player);
-    state.player->vel = add2(state.player->vel, mul2f(norm2(move), speed));
+    state.player->vel = add2(state.player->vel, mul2f(move, speed));
+    if (state.aimer.active)
+        state.aimer.pos = add2(state.aimer.pos, mul2f(move, 0.08f));
 
     waffle_update(&state.waffle);
 
@@ -838,7 +900,13 @@ static void frame(void) {
 
     GeoWtr wtr = geo_wtr(&state.dyn_geo); 
 
-    SYSTEM(e) { /* push game ents */
+    /* push game ents */
+    if (state.aimer.active) {
+        Vec2 p = add2(state.player->pos, state.aimer.pos);
+        write_sight(&wtr, p.x + 0.045f, p.y - 0.045f, 0.3f, Color_DarkMaroon, p.y - 1.0f);
+        write_sight(&wtr, p.x + 0.000f, p.y - 0.000f, 0.3f, Color_Maroon,     p.y - 1.0f);
+    }
+    SYSTEM(e) {
         if (!e->looks) continue;
 
         switch (e->looks) {

@@ -30,8 +30,8 @@ void main() {
     frag_color = vec4(texture(tex, uv).r) * texture(
         palette,
         vec2(
-            (0.5 + int(palette_index) % 4) / 4,
-            (0.5 + int(palette_index / 4)) / 4
+            (0.5 + int(palette_index) % 8) / 8,
+            (0.5 + int(palette_index / 8)) / 8
         )
     );
 }
