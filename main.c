@@ -31,6 +31,7 @@ static float vec2_rads(Vec2 a) { return atan2f(a.y, a.x); }
 static Vec2 rads2(float r) { return vec2(cosf(r), sinf(r)); }
 static Vec2 sub2(Vec2 a, Vec2 b) { return vec2(a.x-b.x, a.y-b.y); }
 static Vec2 add2(Vec2 a, Vec2 b) { return vec2(a.x+b.x, a.y+b.y); }
+static Vec2 mul2(Vec2 a, Vec2 b) { return vec2(a.x*b.x, a.y*b.y); }
 // static Vec2 sub2f(Vec2 a, float f) { return vec2(a.x-f, a.y-f); }
 static Vec2 div2f(Vec2 a, float f) { return vec2(a.x/f, a.y/f); }
 static Vec2 mul2f(Vec2 a, float f) { return vec2(a.x*f, a.y*f); }
@@ -180,6 +181,7 @@ struct Ent {
     EntLooks looks;
 
     /* combat */
+    Tick last_damaged;
     uint8_t hp;
     uint8_t hostile;
     uint8_t aggroed;
@@ -194,6 +196,13 @@ struct Ent {
     struct { Tick end; Vec2 toward; } swing;
 };
 
+typedef struct {
+    Vec2 pos;
+    uint8_t hp;
+    Tick tick;
+    Ent *ent;
+} DmgLbl;
+
 /* application state */
 static struct {
     MapData map;
@@ -202,6 +211,7 @@ static struct {
     struct { uint8_t active; Vec2 pos; } aimer;
 
     Ent ents[1 << 10];
+    DmgLbl dmg_lbls[1 << 7];
 
     uint64_t frame; /* a sokol_time tick, not one of our game ticks */
     Tick tick;
@@ -235,6 +245,21 @@ static Ent *ent_alloc(void) {
 static void ent_free(Ent *ent) {
     ent->gen++;
     ent->active = 0;
+}
+static void dmg_lbl_push(uint8_t hp, Vec2 pos, Ent *ent);
+static int ent_damage(Ent *hit, Ent *hitter) {
+    uint8_t dmg = hitter->item == EntItem_Sword;
+
+    int can_damage = state.tick - hit->last_damaged > 5;
+    if (can_damage) {
+        dmg_lbl_push(dmg, add2(hit->pos, vec2(0.0f, 1.0f)), hit);
+        hit->last_damaged = state.tick;
+        if (hit->hp < dmg)
+            ent_free(hit);
+        else
+            hit->hp -= dmg;
+    }
+    return can_damage;
 }
 
 static float ent_speed(Ent *e) {
@@ -303,9 +328,11 @@ static void waffle_update(Waffle *waffle) {
         }
     }
 
+    int attacker_slot_i = 0;
     for (int i = 0; i < WAFFLE_NSLOT; i++) {
         Ent *slot_e = edx_deref(waffle->slots[i]);
-        if (!slot_e || slot_e == attacker) continue;
+        if (!slot_e) continue;
+        if (slot_e == attacker) { attacker_slot_i = i; continue; }
 
         /* unclaim slots with distant owners */
         if (dist2(slot_e->pos, waffle_slot_pos(i)) > WAFFLE_SLOT_OCCUPANCY_DIST) {
@@ -324,6 +351,17 @@ static void waffle_update(Waffle *waffle) {
     if (attacker) {
         if (state.tick > attacker->swing.end)
             waffle->attacker = (Edx) {0};
+        else {
+            Vec2 slot_pos = waffle_slot_pos(attacker_slot_i);
+            Vec2 goal = lerp2(state.player->pos, slot_pos, 0.6f);
+
+            Vec2 delta = sub2(goal, attacker->pos);
+            float delta_mag = mag2(delta);
+            delta = div2f(delta, delta_mag);
+
+            float speed = 0.005f * fminf(delta_mag, 1.00f);
+            attacker->vel = add2(attacker->vel, mul2f(delta, speed));
+        }
     }
 }
 
@@ -379,6 +417,37 @@ static Mat4 mvp4x4(void) {
     return res;
 }
 
+static int dmg_lbl_alive(DmgLbl *dl) {
+    return dl->tick && (state.tick - dl->tick) < 20;
+}
+
+static void dmg_lbl_push(uint8_t hp, Vec2 world_pos, Ent *ent) {
+    Vec4 lbl_pos4 = mul4x44(mvp4x4(), (Vec4) {{ world_pos.x, world_pos.y, 0.0f, 1.0f }});
+    Vec2 pos = vec2((lbl_pos4.arr[0] + 1.0f) / 2.0f, (lbl_pos4.arr[1] + 1.0f) / 2.0f);
+    pos = mul2(pos, vec2(sapp_widthf(), sapp_heightf()));
+
+    int oldest_i = -1;
+    Tick oldest_i_tick = state.tick;
+    for (int i = 0; i < sizeof(state.dmg_lbls) / sizeof(state.dmg_lbls[0]); i++) {
+        DmgLbl *dl = state.dmg_lbls + i;
+        if (dmg_lbl_alive(dl) && dl->ent == ent && dist2(dl->pos, pos) < 60.0f) {
+            dl->hp += hp;
+            dl->tick = state.tick;
+            return;
+        }
+
+        if (dl->tick < oldest_i_tick)
+            oldest_i_tick = dl->tick,
+            oldest_i = i;
+    }
+
+    if (oldest_i > -1)
+        state.dmg_lbls[oldest_i] = (DmgLbl) {
+            .pos = pos,
+            .hp = hp,
+            .tick = state.tick,
+        };
+}
 
 typedef struct {
     Geo *geo;
@@ -560,6 +629,20 @@ static void write_sword(GeoWtr *wtr, float rads, float x, float y, float z) {
     }
 }
 
+static void write_text(GeoWtr *wtr, float x, float y, char *buf, Color clr) {
+    for (char *text = buf; *text; text++) {
+        stbtt_aligned_quad q;
+        stbtt_GetBakedQuad(cdata, 512,512, *text-32, &x,&y,&q,1);//1=opengl & d3d10+,0=d3d9
+        write_quad(
+            wtr,
+            (Vert) { q.x0, q.y0, 1.0f, clr, q.s0, q.t1 },
+            (Vert) { q.x1, q.y0, 1.0f, clr, q.s1, q.t1 },
+            (Vert) { q.x1, q.y1, 1.0f, clr, q.s1, q.t0 },
+            (Vert) { q.x0, q.y1, 1.0f, clr, q.s0, q.t0 }
+        );
+    }
+}
+
 #define map (state.map)
 static size_t write_map(Geo *geo) {
     GeoWtr wtr = geo_wtr(geo); 
@@ -595,6 +678,8 @@ static void init(void) {
     state.player->item_hit_mask = EntMask_Enemy;
     state.player->looks = EntLooks_Player;
     state.player->item = EntItem_Sword;
+    state.player->hp = 15;
+    state.player->radius = 0.2f;
 
     struct { float x, y, radius; } pots[] = {
         { 3.0f, 3.0f, 0.6f },
@@ -611,6 +696,7 @@ static void init(void) {
         pot->hit_mask = ~0;
         pot->item_hit_mask = EntMask_Player;
         pot->hostile = 1;
+        pot->hp = 3;
     }
 
     stm_setup();
@@ -661,7 +747,7 @@ static void init(void) {
     if (!fread(ttf_buffer, 1, 1<<20, fopen("./WackClubSans-Regular.ttf", "rb")))
         perror("couldn't get font");
     // no guarantee this fits!
-    stbtt_BakeFontBitmap(ttf_buffer,0, 20.0, temp_bitmap,512,512, 32,96, cdata);
+    stbtt_BakeFontBitmap(ttf_buffer,0, 24.0, temp_bitmap,512,512, 32,96, cdata);
     temp_bitmap[0] = 255;
     state.dyn_geo.bind.fs_images[SLOT_tex] =
     state.static_geo.bind.fs_images[SLOT_tex] = sg_make_image(&(sg_image_desc){
@@ -706,7 +792,7 @@ static void init(void) {
     };
 }
 
-static int ent_can_swing(Ent *e, Vec2 toward) {
+static int ent_swing(Ent *e, Vec2 toward) {
     int can_swing = state.tick > e->swing.end;
     if (can_swing)
         e->swing.end = state.tick + SWING_DURATION,
@@ -723,7 +809,7 @@ static void event(const sapp_event *ev) {
             sapp_request_quit();
         else if (ev->key_code == SAPP_KEYCODE_SPACE) {
             if (ev->type == SAPP_EVENTTYPE_KEY_UP && state.aimer.active) {
-                if (ent_can_swing(state.player, norm2(state.aimer.pos)))
+                if (ent_swing(state.player, norm2(state.aimer.pos)))
                     state.aimer.active = 0;
             } else if (!state.aimer.active && state.tick > state.player->swing.end) {
                 state.aimer.active = 1,
@@ -737,7 +823,7 @@ static void event(const sapp_event *ev) {
         float x = -(1.0f - ev->mouse_x / sapp_widthf()  * 2.0f) * GAME_SCALE        + cam.x;
         float y =  (1.0f - ev->mouse_y / sapp_heightf() * 2.0f) * (GAME_SCALE / ar) + cam.y;
         if (state.tick > state.player->swing.end)
-            ent_can_swing(state.player, norm2(sub2(vec2(x, y), state.player->pos)));
+            ent_swing(state.player, norm2(sub2(vec2(x, y), state.player->pos)));
     } break;
     default: {}
     }
@@ -866,8 +952,13 @@ static void tick(void) {
             if (item_dmg) {
                 Vec2 dir = rads2(item_rot + M_PI_2);
                 Ent *hit;
-                if (raymarch(item_pos, dir, NULL, e->item_hit_mask, &hit) < 1.5f)
-                    ent_free(hit);
+                if (raymarch(item_pos, dir, NULL, e->item_hit_mask, &hit) < 1.5f) {
+                    if (ent_damage(hit, e)) {
+                        Vec2 normal = norm2(sub2(e->pos, hit->pos));
+                        e->vel = add2(e->vel, mul2f(normal, 0.07f));
+                        hit->vel = add2(hit->vel, mul2f(normal, -0.2f));
+                    }
+                }
             }
         }
 
@@ -931,19 +1022,17 @@ static void frame(void) {
 
     uint16_t *text_start = wtr.idx;
     { /* push text */
-        float x = sapp_widthf() - 80.0f, y = sapp_heightf();
-        char buf[10];
+        char buf[1 << 6];
         sprintf(buf, "%d FPS", (int)roundf(1.0f / sapp_frame_duration()));
-        for (char *text = buf; *text; text++) {
-            stbtt_aligned_quad q;
-            stbtt_GetBakedQuad(cdata, 512,512, *text-32, &x,&y,&q,1);//1=opengl & d3d10+,0=d3d9
-            write_quad(
-                &wtr,
-                (Vert) { q.x0, q.y0, 1.0f, Color_White, q.s0, q.t1 },
-                (Vert) { q.x1, q.y0, 1.0f, Color_White, q.s1, q.t1 },
-                (Vert) { q.x1, q.y1, 1.0f, Color_White, q.s1, q.t0 },
-                (Vert) { q.x0, q.y1, 1.0f, Color_White, q.s0, q.t0 }
-            );
+        write_text(&wtr, sapp_widthf() - 90.0f, sapp_heightf(), buf, Color_White);
+
+        for (int i = 0; i < sizeof(state.dmg_lbls) / sizeof(state.dmg_lbls[0]); i++) {
+            DmgLbl *dl = state.dmg_lbls + i;
+            float t = state.tick - dl->tick;
+            if (dmg_lbl_alive(dl)) {
+                sprintf(buf, "%dhp", dl->hp);
+                write_text(&wtr, dl->pos.x, dl->pos.y + t, buf, Color_Red);
+            }
         }
     }
 
