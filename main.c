@@ -37,6 +37,7 @@ static Vec2 div2f(Vec2 a, float f) { return vec2(a.x/f, a.y/f); }
 static Vec2 mul2f(Vec2 a, float f) { return vec2(a.x*f, a.y*f); }
 static float dot2(Vec2 a, Vec2 b) { return a.x*b.x + a.y*b.y; }
 static float mag2(Vec2 a) { return sqrtf(dot2(a, a)); }
+static Vec2 perp2(Vec2 v) { return vec2(-v.y, v.x); }
 static Vec2 lerp2(Vec2 a, Vec2 b, float t) { return add2(mul2f(a, 1.0f - t), mul2f(b, t)); }
 static float dist2(Vec2 a, Vec2 b) { return mag2(sub2(a, b)); }
 static Vec2 norm2(Vec2 a) { return div2f(a, mag2(a) ?: 1.0f); }
@@ -153,6 +154,7 @@ typedef struct {
     Edx attacker;
 } Waffle;
 
+
 typedef enum {
     EntMask_Player  = (1 << 0),
     EntMask_Terrain = (1 << 1),
@@ -163,14 +165,35 @@ typedef enum {
     EntLooks_None,
     EntLooks_Player,
     EntLooks_Pot,
+    EntLooks_Arrow,
 } EntLooks;
 
 typedef enum {
     EntItem_None,
     EntItem_Sword,
+    EntItem_Bow,
+    EntItem_COUNT,
 } EntItem;
+uint8_t item_shoots[EntItem_COUNT] = {
+    [EntItem_Bow] = 1,
+};
+uint8_t item_hits[EntItem_COUNT] = {
+    [EntItem_Sword] = 1,
+};
+float item_x_offset[EntItem_COUNT] = {
+    [EntItem_Bow] = -0.75f,
+};
+float item_rot_offset[EntItem_COUNT] = {
+    [EntItem_Sword] = -M_PI_2,
+};
+uint8_t item_always_point_down[EntItem_COUNT] = {
+    [EntItem_Bow] = 1,
+};
+Tick item_attack_duration[EntItem_COUNT] = {
+    [EntItem_Sword] = 50,
+    [EntItem_Bow] = 85,
+};
 
-#define SWING_DURATION 50
 typedef struct Ent Ent;
 struct Ent {
     /* bookkeeping */
@@ -187,13 +210,13 @@ struct Ent {
     uint8_t aggroed;
 
     /* physics */
-    float radius;
+    float radius, friction;
     EntMask has_mask, hit_mask, item_hit_mask;
     Vec2 pos, vel;
 
     /* held item */
     EntItem item;
-    struct { Tick end; Vec2 toward; } swing;
+    struct { Tick end; Vec2 toward; uint8_t shot; } swing;
 };
 
 typedef struct {
@@ -344,7 +367,7 @@ static void waffle_update(Waffle *waffle) {
         if (!attacker) {
             waffle->attacker = edx_from(slot_e);
             attacker = slot_e;
-            slot_e->swing.end = state.tick + SWING_DURATION;
+            slot_e->swing.end = state.tick + item_attack_duration[slot_e->item];
         }
     }
 
@@ -379,6 +402,7 @@ stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
     X(Color_Green,        0.00f, 0.89f, 0.19f, 1.00f) \
     X(Color_Grey,         0.51f, 0.51f, 0.51f, 1.00f) \
     X(Color_DarkGrey,     0.31f, 0.31f, 0.31f, 1.00f) \
+    X(Color_LightGrey,    0.78f, 0.78f, 0.78f, 1.00f) \
     X(Color_Yellow,       0.99f, 0.98f, 0.00f, 1.00f) \
     X(Color_ForestShadow, 0.18f, 0.43f, 0.36f, 1.00f) \
     X(Color_TreeBorder,   0.00f, 0.42f, 0.13f, 1.00f) \
@@ -539,6 +563,30 @@ static void write_rect(GeoWtr *wtr, float x, float y, float w, float h, Color cl
     );
 }
 
+static void write_line(
+    GeoWtr *wtr,
+    float x0, float y0,
+    float x1, float y1,
+    float thickness,
+    Color clr, float z
+) {
+    Vec2 n = perp2(sub2(vec2(x0, y0), vec2(x1, y1)));
+    Vec2 t = mul2f(norm2(n), thickness * 0.5f);
+    
+    size_t vert0 = wtr->vert - wtr->geo->verts;
+    *(wtr->vert)++ = (Vert) { x0 + t.x, y0 + t.y, z, clr };
+    *(wtr->vert)++ = (Vert) { x0 - t.x, y0 - t.y, z, clr };
+    *(wtr->vert)++ = (Vert) { x1 + t.x, y1 + t.y, z, clr };
+    *(wtr->vert)++ = (Vert) { x1 - t.x, y1 - t.y, z, clr };
+
+    *(wtr->idx)++ = vert0 + 0;
+    *(wtr->idx)++ = vert0 + 1;
+    *(wtr->idx)++ = vert0 + 2;
+    *(wtr->idx)++ = vert0 + 2;
+    *(wtr->idx)++ = vert0 + 1;
+    *(wtr->idx)++ = vert0 + 3;
+}
+
 static void write_sight(GeoWtr *wtr, float x, float y, float r, Color clr, float z) {
     size_t start = wtr->vert - wtr->geo->verts;
     uint16_t circ_indices[] = {
@@ -597,7 +645,7 @@ static void write_pot(GeoWtr *wtr, float x, float y, float size) {
 
 #define GOLDEN_RATIO (1.618034f)
 static void write_sword(GeoWtr *wtr, float rads, float x, float y, float z) {
-    Vert *start = wtr->vert;
+    Vert *vert0 = wtr->vert;
     write_tri(wtr,
         (Vert) {  0.075f,         0.0f, z, Color_DarkBrown },
         (Vert) { -0.075f,         0.0f, z, Color_DarkBrown },
@@ -622,7 +670,125 @@ static void write_sword(GeoWtr *wtr, float rads, float x, float y, float z) {
     write_rect(wtr, 0.0f, 0.4f - t, 2.0f * w, t, Color_DarkGrey, z);
 
     Mat2 m = z_rot2x2(rads);
-    for (Vert *i = start; i < wtr->vert; i++) {
+    for (Vert *i = vert0; i < wtr->vert; i++) {
+        Vec2 p = mul2x22(m, vec2(i->x, i->y));
+        i->x = x + p.x;
+        i->y = y + p.y;
+    }
+}
+
+static void _write_arrow_inr(GeoWtr *wtr, float x, float z) {
+    for (float f = 1.0f; f >= -1.0f; f -= 2.0f) {
+        write_tri(wtr,
+            (Vert) { 0.35f + x, 0.01f * f, z, Color_Red },
+            (Vert) { 0.20f + x, 0.12f * f, z, Color_Red },
+            (Vert) { 0.00f + x, 0.12f * f, z, Color_Red }
+        );
+        write_tri(wtr,
+            (Vert) { 0.35f + x, 0.01f * f, z, Color_Red },
+            (Vert) { 0.05f + x, 0.01f * f, z, Color_Red },
+            (Vert) { 0.00f + x, 0.12f * f, z, Color_Red }
+        );
+    }
+
+    write_line(wtr, 1.05f + x, 0.0f, 0.05f + x, 0.0f, 0.08f, Color_DarkBrown, z);
+    write_tri(wtr,
+        (Vert) { 1.34f + x,  0.000f, z, Color_Grey },
+        (Vert) { 1.10f + x, -0.105f, z, Color_Grey },
+        (Vert) { 1.10f + x,  0.105f, z, Color_Grey }
+    );
+    write_tri(wtr,
+        (Vert) { 0.975f + x,  0.000f, z, Color_Grey },
+        (Vert) { 1.100f + x, -0.105f, z, Color_Grey },
+        (Vert) { 1.100f + x,  0.105f, z, Color_Grey }
+    );
+}
+
+static void write_arrow(GeoWtr *wtr, float rads, float x, float y, float z) {
+    Vert *vert0 = wtr->vert;
+    _write_arrow_inr(wtr, 0.0f, z);
+
+    Mat2 m = z_rot2x2(rads);
+    for (Vert *i = vert0; i < wtr->vert; i++) {
+        Vec2 p = mul2x22(m, vec2(i->x, i->y));
+        i->x = x + p.x;
+        i->y = y + p.y;
+    }
+}
+
+static void write_bow(GeoWtr *wtr, float rads, float x, float y, float z, Ent *e) {
+    Vert *vert0 = wtr->vert;
+
+    float r = 1.0f - (e->swing.end - state.tick) / ((float) item_attack_duration[e->item]);
+    if (r < 0.0f || r > 1.0f || e->swing.shot) r = 0.0f;
+    write_line(wtr, -0.1f, -1.0f, -0.1f - r * 0.6f, 0.0f, 0.035f, Color_LightGrey, z);
+    write_line(wtr, -0.1f,  1.0f, -0.1f - r * 0.6f, 0.0f, 0.035f, Color_LightGrey, z);
+
+    if (r > 0.0f) _write_arrow_inr(wtr, -r, z);
+
+    size_t idx0 = wtr->vert - wtr->geo->verts;
+    uint16_t bow_indices[] = {
+         0 + idx0,  1 + idx0,  2 + idx0,
+         2 + idx0,  1 + idx0,  3 + idx0,
+         4 + idx0,  5 + idx0,  6 + idx0,
+         6 + idx0,  5 + idx0,  7 + idx0,
+         8 + idx0,  9 + idx0,  7 + idx0,
+         7 + idx0,  9 + idx0, 10 + idx0,
+        15 + idx0, 16 + idx0, 13 + idx0,
+        14 + idx0, 29 + idx0, 13 + idx0,
+        18 + idx0, 19 + idx0, 20 + idx0,
+        20 + idx0, 19 + idx0, 21 + idx0,
+        22 + idx0, 23 + idx0, 21 + idx0,
+        21 + idx0, 23 + idx0, 24 + idx0,
+        25 + idx0, 26 + idx0, 27 + idx0,
+        27 + idx0, 26 + idx0, 28 + idx0,
+         5 + idx0,  1 + idx0,  0 + idx0,
+         7 + idx0, 10 + idx0,  6 + idx0,
+        21 + idx0, 24 + idx0, 20 + idx0,
+        25 + idx0, 22 + idx0, 26 + idx0,
+        12 + idx0, 11 + idx0,  9 + idx0,
+        16 + idx0, 19 + idx0, 18 + idx0,
+        29 + idx0, 17 + idx0, 13 + idx0,
+        17 + idx0, 15 + idx0, 13 + idx0,
+        11 + idx0, 12 + idx0, 13 + idx0,
+        12 + idx0, 14 + idx0, 13 + idx0
+    };
+    memcpy(wtr->idx, bow_indices, sizeof(bow_indices));
+    wtr->idx += sizeof(bow_indices) / sizeof(uint16_t);
+
+    *(wtr->vert)++ = (Vert) {-0.1137f, -1.0178f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) {-0.0863f, -0.9822f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.0163f, -1.1178f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.0437f, -1.0822f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) {-0.0530f, -1.0235f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) {-0.1065f, -0.9765f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2470f, -0.4235f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.1531f, -0.3844f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2031f, -0.0922f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2969f, -0.1078f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2469f, -0.4078f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2708f, -0.0688f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2292f, -0.1312f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.1673f, -0.0000f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.0792f, -0.0312f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2292f,  0.1312f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2708f,  0.0688f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.0792f,  0.0312f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2969f,  0.1078f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2031f,  0.0922f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2469f,  0.4078f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.1531f,  0.3844f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) {-0.1065f,  0.9765f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) {-0.0530f,  1.0235f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.2470f,  0.4235f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) {-0.0863f,  0.9822f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) {-0.1137f,  1.0178f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.0437f,  1.0822f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.0163f,  1.1178f, z, Color_Brown };
+    *(wtr->vert)++ = (Vert) { 0.1000f,  0.0000f, z, Color_Brown };
+
+    Mat2 m = z_rot2x2(rads);
+    for (Vert *i = vert0; i < wtr->vert; i++) {
         Vec2 p = mul2x22(m, vec2(i->x, i->y));
         i->x = x + p.x;
         i->y = y + p.y;
@@ -677,14 +843,14 @@ static void init(void) {
     state.player->hit_mask = ~EntMask_Player;
     state.player->item_hit_mask = EntMask_Enemy;
     state.player->looks = EntLooks_Player;
-    state.player->item = EntItem_Sword;
+    state.player->item = EntItem_Bow;
     state.player->hp = 15;
     state.player->radius = 0.2f;
 
     struct { float x, y, radius; } pots[] = {
-        { 3.0f, 3.0f, 0.6f },
-        { 5.0f, 2.0f, 0.7f },
-        { 4.0f, 5.0f, 0.5f },
+        { 5.0f + 3.0f, 3.0f, 0.6f },
+        { 5.0f + 5.0f, 2.0f, 0.7f },
+        { 5.0f + 4.0f, 5.0f, 0.5f },
     };
     for (int i = 0; i < sizeof(pots) / sizeof(pots[0]); i++) {
         Ent *pot = ent_alloc();
@@ -795,7 +961,8 @@ static void init(void) {
 static int ent_swing(Ent *e, Vec2 toward) {
     int can_swing = state.tick > e->swing.end;
     if (can_swing)
-        e->swing.end = state.tick + SWING_DURATION,
+        e->swing.shot = 0,
+        e->swing.end = state.tick + item_attack_duration[e->item],
         e->swing.toward = norm2(toward);
     return can_swing;
 }
@@ -863,9 +1030,11 @@ static float raymarch_ent(Ent *ent, Ent **hit) {
 }
 
 static void ent_item_transform(Ent *e, float *out_rot, Vec2 *out_pos, uint8_t *out_dmg) {
+    Vec2 toward = e->swing.toward;
     Vec2 center = vec2(0.0f, 0.5f);
-    Vec2 hand_pos = add2(center, mul2f(e->swing.toward, 0.5f));
-    float rot = vec2_rads(e->swing.toward) - M_PI_2;
+    Vec2 hand_pos = add2(center, mul2f(toward, 0.5f));
+
+    float rot = vec2_rads(e->swing.toward) + item_rot_offset[e->item];
     float dir = signum(e->swing.toward.x) ?: 1.0f;
 
     float rest_rot;
@@ -876,8 +1045,10 @@ static void ent_item_transform(Ent *e, float *out_rot, Vec2 *out_pos, uint8_t *o
         float drag = fminf(vl, 0.07f);
         float breathe = sinf(tickf / 35.0f) / 30.0f;
         float jog = sinf(tickf / 6.85f) * fminf(vl, 0.175f);
-        rest_rot = (M_PI_2 + breathe + jog) * -dir;
-        rest_pos.x = (0.55 + breathe / 3.2 + jog * 1.5 + drag) * -dir;
+        float x_offset = item_x_offset[e->item];
+        rest_rot = -(M_PI_2 + breathe + jog);
+        if (!item_always_point_down[e->item]) rest_rot *= dir;
+        rest_pos.x = (0.55 + breathe / 3.2 + jog * 1.5 + drag + x_offset) * -dir;
         rest_pos.y = 0.35 + (breathe + jog) / 2.8 + drag * 0.5;
     }
 
@@ -885,7 +1056,7 @@ static void ent_item_transform(Ent *e, float *out_rot, Vec2 *out_pos, uint8_t *o
     *out_pos = rest_pos;
     if (out_dmg) *out_dmg = 0;
 
-    float time = (e->swing.end - state.tick) / ((float) SWING_DURATION);
+    float time = (e->swing.end - state.tick) / ((float) item_attack_duration[e->item]);
     if (time > 0.0f) {
         typedef enum {
             KF_Rotates = (1 << 1),
@@ -895,15 +1066,29 @@ static void ent_item_transform(Ent *e, float *out_rot, Vec2 *out_pos, uint8_t *o
         typedef struct { float duration; KF_Flag flags; float rot; Vec2 pos; } KF;
 
         float swing = 0.5f * dir;
-        KF frames[] = {
-            { 0.2174f,              KF_Rotates | KF_Moves, rot - swing * 1.0, hand_pos },
-            { 0.2304f,              KF_Rotates           , rot - swing * 2.0           },
-            { 0.0870f, KF_Damages | KF_Rotates           , rot + swing * 2.0           },
-            { 0.2478f,              KF_Rotates           , rot + swing * 3.0           },
-            { 0.2174f,              KF_Rotates | KF_Moves,          rest_rot, rest_pos },
+#define FRAME_COUNT (5)
+        KF frames[FRAME_COUNT] = {0};
+        KF *f = frames;
+
+        if (e->item == EntItem_Sword) {
+            *f++=(KF){0.2174f,              KF_Rotates | KF_Moves, rot-swing * 1.f, hand_pos};
+            *f++=(KF){0.2304f,              KF_Rotates           , rot-swing * 2.f,         };
+            *f++=(KF){0.0870f, KF_Damages | KF_Rotates           , rot+swing * 2.f,         };
+            *f++=(KF){0.2478f,              KF_Rotates           , rot+swing * 3.f,         };
+            *f++=(KF){0.2174f,              KF_Rotates | KF_Moves,        rest_rot, rest_pos};
+        }
+        if (e->item == EntItem_Bow) {
+            /* ready, backup, FIRE, recover, return */
+            *f++=(KF){0.2703f,              KF_Moves | KF_Rotates,       rot, hand_pos};
+            *f++=(KF){0.2703f,              KF_Moves             ,      0.0f, hand_pos};
+            *f++=(KF){0.0541f, KF_Damages | KF_Moves             ,      0.0f, hand_pos};
+            *f++=(KF){0.1351f,              KF_Moves             ,      0.0f, hand_pos};
+            *f++=(KF){0.2703f,              KF_Moves | KF_Rotates,  rest_rot, rest_pos};
+            frames[1].pos = sub2(hand_pos, mul2f(toward, 0.2f));
+            frames[2].pos = sub2(hand_pos, mul2f(toward, 0.6f));
         };
 
-        for (KF *f = frames; (f - frames) < sizeof(frames) / sizeof(frames[0]); f++) {
+        for (KF *f = frames; (f - frames) < FRAME_COUNT; f++) {
             if (time > f->duration) {
                 time -= f->duration;
                 if (f->flags & KF_Rotates) *out_rot = f->rot;
@@ -918,6 +1103,7 @@ static void ent_item_transform(Ent *e, float *out_rot, Vec2 *out_pos, uint8_t *o
             break;
         }
     }
+#undef FRAME_COUNT
 
     out_pos->x += e->pos.x;
     out_pos->y += e->pos.y;
@@ -949,7 +1135,17 @@ static void tick(void) {
             Vec2 item_pos;
             uint8_t item_dmg;
             ent_item_transform(e, &item_rot, &item_pos, &item_dmg);
-            if (item_dmg) {
+            if (item_shoots[e->item] && item_dmg && !e->swing.shot) {
+                e->swing.shot = 1;
+                e->vel = sub2(e->vel, mul2f(e->swing.toward, 0.145f));
+
+                Ent *blt = ent_alloc();
+                blt->pos = item_pos;
+                blt->looks = EntLooks_Arrow;
+                blt->vel = mul2f(e->swing.toward, 0.13f);
+                blt->friction = 1.0f;
+            }
+            if (item_hits  [e->item] && item_dmg) {
                 Vec2 dir = rads2(item_rot + M_PI_2);
                 Ent *hit;
                 if (raymarch(item_pos, dir, NULL, e->item_hit_mask, &hit) < 1.5f) {
@@ -977,7 +1173,7 @@ static void tick(void) {
 
         // e->pos = add2(e->pos, mul2f(e->vel, d / vel_mag));
         e->pos = add2(e->pos, mul2f(norm2(e->vel), d));
-        e->vel = mul2f(e->vel, 0.93f);
+        e->vel = mul2f(e->vel, e->friction ?: 0.93f);
     }
 }
 
@@ -1008,13 +1204,19 @@ static void frame(void) {
             case EntLooks_Pot: {
                 write_pot(&wtr, e->pos.x, e->pos.y, e->radius);
             } break;
+            case EntLooks_Arrow: {
+                write_arrow(&wtr, vec2_rads(e->vel), e->pos.x, e->pos.y, e->pos.y);
+            } break;
         }
 
         if (e->item) {
             float item_rot;
             Vec2 item_pos;
             ent_item_transform(e, &item_rot, &item_pos, NULL);
-            write_sword(&wtr, item_rot, item_pos.x, item_pos.y, item_pos.y - 1.0f);
+            if (e->item == EntItem_Sword)
+              write_sword(&wtr, item_rot, item_pos.x, item_pos.y, item_pos.y - 1.0f);
+            if (e->item == EntItem_Bow)
+              write_bow  (&wtr, item_rot, item_pos.x, item_pos.y, item_pos.y - 1.0f, e);
         }
 
         geo_find_z_range(state.dyn_geo.verts, wtr.vert);
