@@ -269,7 +269,7 @@ static void ent_free(Ent *ent) {
 }
 static void dmg_lbl_push(uint8_t hp, Vec2 pos, Ent *ent);
 static int ent_damage(Ent *hit, Ent *hitter) {
-    uint8_t dmg = hitter->item == EntItem_Sword;
+    uint8_t dmg = 1; // hitter->item == EntItem_Sword;
 
     int can_damage = state.tick - hit->last_damaged > 5;
     if (can_damage) {
@@ -398,9 +398,10 @@ stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
     X(Color_Maroon,       0.75f, 0.13f, 0.22f, 1.00f) \
     X(Color_DarkMaroon,   0.55f, 0.03f, 0.12f, 1.00f) \
     X(Color_Green,        0.00f, 0.89f, 0.19f, 1.00f) \
+    X(Color_LightGrey,    0.78f, 0.78f, 0.78f, 1.00f) \
+    X(Color_LightishGrey, 0.68f, 0.68f, 0.68f, 1.00f) \
     X(Color_Grey,         0.51f, 0.51f, 0.51f, 1.00f) \
     X(Color_DarkGrey,     0.31f, 0.31f, 0.31f, 1.00f) \
-    X(Color_LightGrey,    0.78f, 0.78f, 0.78f, 1.00f) \
     X(Color_Yellow,       0.99f, 0.98f, 0.00f, 1.00f) \
     X(Color_ForestShadow, 0.18f, 0.43f, 0.36f, 1.00f) \
     X(Color_TreeBorder,   0.00f, 0.42f, 0.13f, 1.00f) \
@@ -807,6 +808,43 @@ static void write_text(GeoWtr *wtr, float x, float y, char *buf, Color clr) {
     }
 }
 
+static void write_corner(GeoWtr *wtr, float x, float y, float mx, float my, Color clr, float z) {
+    write_line(wtr, x-16.0f*mx, y-48.0f*my, x-16.0f*mx, y-11.2f*my, 16.0f, clr, z);
+    write_line(wtr, x-16.0f*mx, y-16.0f*my, x+16.0f*mx, y+16.0f*my, 16.0f, clr, z);
+    write_line(wtr, x+11.2f*mx, y+16.0f*my, x+52.0f*mx, y+16.0f*my, 16.0f, clr, z);
+}
+
+static void write_frame(GeoWtr *wtr) {
+    float x = sapp_widthf()/2.0f, y = sapp_heightf()/2.0f, z = 1.0f;
+#define GAP (3.36f)
+
+    write_rect(wtr, x, y - 128.0f, 256.0f, 256.0f, Color_DarkBrown, z);
+
+    for (float u = 1.0f; u >= -1.0f; u -= 2.0f) {
+        for (float v = 1.0f; v >= -1.0f; v -= 2.0f) {
+            write_corner(wtr, u*(-120.0f+GAP)+x, v*(120.0f-GAP)+y, u, v, Color_DarkGrey, z);
+        }
+    }
+
+    // for not jank ui: s/124.0f/138.4f/g
+    // don't forget the /g, that's how we got the jank in the first place
+    write_line(wtr, -112.0f+x,  124.0f+y,  112.0f+x,  138.4f+y, 16.0f, Color_Brown, z);
+    write_line(wtr, -112.0f+x, -124.0f+y,  112.0f+x, -138.4f+y, 16.0f, Color_Brown, z);
+    write_line(wtr, -124.0f+x,  112.0f+y, -138.4f+x, -112.0f+y, 16.0f, Color_Brown, z);
+    write_line(wtr,  124.0f+x,  112.0f+y,  138.4f+x, -112.0f+y, 16.0f, Color_Brown, z);
+    
+    for (float u = 1.0f; u >= -1.0f; u -= 2.0f) {
+        for (float v = 1.0f; v >= -1.0f; v -= 2.0f) {
+            write_corner(wtr, u*(-120.0f-GAP)+x, v*(120.0f+GAP)+y, u, v, Color_LightishGrey, z);
+            write_corner(wtr, u*(-120.0f    )+x, v*(120.0f    )+y, u, v, Color_Grey, z);
+        }
+    }
+
+    char *msg = "sup nerds";
+    write_text(wtr, x - 70.0f, y + 100.0f, msg, Color_White);
+#undef GAP
+}
+
 #define map (state.map)
 static size_t write_map(Geo *geo) {
     GeoWtr wtr = geo_wtr(geo); 
@@ -1121,9 +1159,12 @@ static void tick(void) {
     if (state.keys[SAPP_KEYCODE_D]) move.x += 1.0;
     move = norm2(move);
     float speed = ent_speed(state.player);
-    state.player->vel = add2(state.player->vel, mul2f(move, speed));
-    if (state.aimer.active)
-        state.aimer.pos = add2(state.aimer.pos, mul2f(move, 0.08f));
+    if (!state.keys[SAPP_KEYCODE_LEFT_SHIFT])
+        state.player->vel = add2(state.player->vel, mul2f(move, speed));
+    if (state.aimer.active) {
+        float aimer_speed = 0.08f * (1.0f + state.keys[SAPP_KEYCODE_LEFT_SHIFT]);
+        state.aimer.pos = add2(state.aimer.pos, mul2f(move, aimer_speed));
+    }
 
     waffle_update(&state.waffle);
 
@@ -1237,6 +1278,8 @@ static void frame(void) {
         char buf[1 << 6];
         sprintf(buf, "%d FPS", (int)roundf(1.0f / sapp_frame_duration()));
         write_text(&wtr, sapp_widthf() - 90.0f, sapp_heightf(), buf, Color_White);
+
+        write_frame(&wtr);
 
         for (int i = 0; i < sizeof(state.dmg_lbls) / sizeof(state.dmg_lbls[0]); i++) {
             DmgLbl *dl = state.dmg_lbls + i;
