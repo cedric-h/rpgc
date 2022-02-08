@@ -205,9 +205,7 @@ struct Ent {
 
     /* combat */
     Tick last_damaged;
-    uint8_t hp;
-    uint8_t hostile;
-    uint8_t aggroed;
+    uint8_t hp, hostile, aggroed, pointy;
 
     /* physics */
     float radius, friction;
@@ -1143,7 +1141,9 @@ static void tick(void) {
                 blt->pos = item_pos;
                 blt->looks = EntLooks_Arrow;
                 blt->vel = mul2f(e->swing.toward, 0.13f);
+                blt->hit_mask = e->item_hit_mask;
                 blt->friction = 1.0f;
+                blt->pointy = true;
             }
             if (item_hits  [e->item] && item_dmg) {
                 Vec2 dir = rads2(item_rot + M_PI_2);
@@ -1165,8 +1165,18 @@ static void tick(void) {
         Ent *closest_ent;
         float closest_dist = raymarch_ent(e, &closest_ent) - e->radius;
         if (closest_dist <= 0.0f) {
+            /* by moving forward we'd hit a thing, if we're an arrow that means damage */
+            if (e->pointy && closest_ent) {
+                if (ent_damage(closest_ent, e))
+                    closest_ent->vel = add2(closest_ent->vel, mul2f(e->vel, 0.2f));
+                ent_free(e);
+                return;
+            }
+
+            /* otherwise let's just bounce off of that thing */
             e->vel = mul2f(refl2(norm2(e->vel), norm2(sub2(e->pos, closest_ent->pos))), vel_mag);
             d = vel_mag;
+
         } else {
             d = fminf(vel_mag, closest_dist);
         }
