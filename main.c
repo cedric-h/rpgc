@@ -224,6 +224,23 @@ typedef struct {
     Ent *ent;
 } DmgLbl;
 
+typedef enum {
+    UiBoxLooks_Frame,
+    UiBoxLooks_Slot,
+} UiBoxLooks;
+
+typedef struct UiBox UiBox;
+struct UiBox {
+    UiBox *parent, *next;
+    UiBoxLooks looks;
+    Vec2 pos, size; /* pos = top left */
+};
+typedef struct {
+    UiBox boxes[1 << 5];
+    UiBox *grabbed, *root;
+    Vec2 last_mouse;
+} UiState;
+
 /* application state */
 static struct {
     MapData map;
@@ -233,6 +250,8 @@ static struct {
 
     Ent ents[1 << 10];
     DmgLbl dmg_lbls[1 << 7];
+
+    UiState ui;
 
     uint64_t frame; /* a sokol_time tick, not one of our game ticks */
     Tick tick;
@@ -814,35 +833,37 @@ static void write_corner(GeoWtr *wtr, float x, float y, float mx, float my, Colo
     write_line(wtr, x+11.2f*mx, y+16.0f*my, x+52.0f*mx, y+16.0f*my, 16.0f, clr, z);
 }
 
-static void write_frame(GeoWtr *wtr) {
-    float x = sapp_widthf()/2.0f, y = sapp_heightf()/2.0f, z = 1.0f;
+static void write_frame(GeoWtr *wtr, float x, float y, float w, float h) {
+    float z = 1.0f;
+    float w2 = w / 2.0f;
+    float h2 = h / 2.0f;
+    x += w2, y += h2;
 #define GAP (3.36f)
+#define PULL (-1.00f)
 
-    write_rect(wtr, x, y - 128.0f, 256.0f, 256.0f, Color_DarkBrown, z);
+    write_rect(wtr, x, y - 8.0f - h2, w + 16.0f, h + 16.0f, Color_DarkBrown, z);
 
     for (float u = 1.0f; u >= -1.0f; u -= 2.0f) {
         for (float v = 1.0f; v >= -1.0f; v -= 2.0f) {
-            write_corner(wtr, u*(-120.0f+GAP)+x, v*(120.0f-GAP)+y, u, v, Color_DarkGrey, z);
+            write_corner(wtr, u*(-w2+PULL+GAP)+x, v*(h2-PULL-GAP)+y, u, v, Color_DarkGrey, z);
         }
     }
 
-    // for not jank ui: s/124.0f/138.4f/g
+    // for not jank ui: s/- 4.0f/+10.4/g
     // don't forget the /g, that's how we got the jank in the first place
-    write_line(wtr, -112.0f+x,  124.0f+y,  112.0f+x,  138.4f+y, 16.0f, Color_Brown, z);
-    write_line(wtr, -112.0f+x, -124.0f+y,  112.0f+x, -138.4f+y, 16.0f, Color_Brown, z);
-    write_line(wtr, -124.0f+x,  112.0f+y, -138.4f+x, -112.0f+y, 16.0f, Color_Brown, z);
-    write_line(wtr,  124.0f+x,  112.0f+y,  138.4f+x, -112.0f+y, 16.0f, Color_Brown, z);
+    write_line(wtr, -w2+x,  h2+y,        w2+x,  16.0f+h2+y, 16.0f, Color_Brown, z);
+    write_line(wtr, -w2+x, -h2+y,        w2+x, -16.0f-h2+y, 16.0f, Color_Brown, z);
+    write_line(wtr, -w2+x,  h2+y, -16.0f-w2+x,       -h2+y, 16.0f, Color_Brown, z);
+    write_line(wtr,  w2+x,  h2+y,  16.0f+w2+x,       -h2+y, 16.0f, Color_Brown, z);
     
     for (float u = 1.0f; u >= -1.0f; u -= 2.0f) {
         for (float v = 1.0f; v >= -1.0f; v -= 2.0f) {
-            write_corner(wtr, u*(-120.0f-GAP)+x, v*(120.0f+GAP)+y, u, v, Color_LightishGrey, z);
-            write_corner(wtr, u*(-120.0f    )+x, v*(120.0f    )+y, u, v, Color_Grey, z);
+            write_corner(wtr, u*(-w2+PULL-GAP)+x, v*(h2-PULL+GAP)+y, u, v, Color_LightishGrey, z);
+            write_corner(wtr, u*(-w2+PULL    )+x, v*(h2-PULL    )+y, u, v, Color_Grey, z);
         }
     }
-
-    char *msg = "sup nerds";
-    write_text(wtr, x - 70.0f, y + 100.0f, msg, Color_White);
 #undef GAP
+#undef PULL
 }
 
 #define map (state.map)
@@ -873,6 +894,15 @@ static size_t write_map(Geo *geo) {
 }
 #undef map
 
+static void ui_init(void) {
+    state.ui.boxes[0] = (UiBox) {
+        .looks = UiBoxLooks_Frame,
+        .pos = vec2(sapp_widthf()/2.0f - 128.0f, sapp_heightf()/2.0f - 128.0f),
+        .size = vec2(440.0f, 256.0f),
+    };
+    state.ui.root = state.ui.boxes;
+}
+
 static void init(void) {
     state.player = ent_alloc();
     state.player->has_mask = EntMask_Player;
@@ -882,6 +912,8 @@ static void init(void) {
     state.player->item = EntItem_Bow;
     state.player->hp = 15;
     state.player->radius = 0.2f;
+
+    ui_init();
 
     struct { float x, y, radius; } pots[] = {
         { 5.0f + 3.0f, 3.0f, 0.6f },
@@ -1003,7 +1035,55 @@ static int ent_swing(Ent *e, Vec2 toward) {
     return can_swing;
 }
 
-static void event(const sapp_event *ev) {
+static UiBox *ui_box_at_pos(Vec2 pos) {
+    UiBox *base = state.ui.root;
+
+    while (1) {
+        float max_x = base->pos.x + base->size.x,
+              min_x = base->pos.x,
+              max_y = base->pos.y + base->size.y,
+              min_y = base->pos.y;
+        if (pos.x > min_x && pos.x < max_x &&
+            pos.y > min_y && pos.y < max_y) {
+            return base;
+        }
+
+        UiBox *next;
+             if ((next = base->next));
+        else if (base->parent && (next = base->parent->next));
+        else return NULL;
+        base = next;
+    }
+}
+
+static void write_ui(GeoWtr *wtr) {
+    UiBox *base = state.ui.root;
+
+    while (1) {
+        switch (base->looks) {
+        case(UiBoxLooks_Frame): {
+            float x = base->pos.x;
+            float y = base->pos.y;
+            float w = base->size.x;
+            float h = base->size.y;
+            write_frame(wtr, x, y, w, h);
+
+            char *msg = "sup nerds";
+            x += w / 2.0f, y += h / 2.0f;
+            write_text(wtr, x - 70.0f, y + 100.0f, msg, Color_White);
+        } break;
+        case(UiBoxLooks_Slot):  { } break;
+        }
+
+        UiBox *next;
+             if ((next = base->next));
+        else if (base->parent && (next = base->parent->next));
+        else return;
+        base = next;
+    }
+}
+
+static void game_event(const sapp_event *ev) {
     switch (ev->type) {
     case SAPP_EVENTTYPE_KEY_UP:
     case SAPP_EVENTTYPE_KEY_DOWN: {
@@ -1028,6 +1108,46 @@ static void event(const sapp_event *ev) {
         if (state.tick > state.player->swing.end)
             ent_swing(state.player, norm2(sub2(vec2(x, y), state.player->pos)));
     } break;
+    default: {}
+    }
+}
+
+/* ui gatekeeps events from the game */
+static void event(const sapp_event *ev) {
+    Vec2 mouse_pos = vec2(ev->mouse_x, ev->mouse_y);
+
+    switch (ev->type) {
+    case SAPP_EVENTTYPE_MOUSE_DOWN: {
+        UiBox *hovered = ui_box_at_pos(mouse_pos);
+        if (hovered) {
+            state.ui.grabbed = hovered;
+            goto CAPTURE;
+        }
+    } break;
+    case SAPP_EVENTTYPE_MOUSE_MOVE: {
+        if (state.ui.grabbed) {
+            state.ui.grabbed->pos.x += mouse_pos.x - state.ui.last_mouse.x;
+            state.ui.grabbed->pos.y += state.ui.last_mouse.y - mouse_pos.y;
+            goto CAPTURE;
+        }
+    } break;
+    case SAPP_EVENTTYPE_MOUSE_UP: {
+        if (state.ui.grabbed) {
+            state.ui.grabbed = NULL;
+            goto CAPTURE;
+        }
+    } break;
+    default: {}
+    }
+
+    game_event(ev);
+
+CAPTURE:
+    switch (ev->type) {
+    case SAPP_EVENTTYPE_MOUSE_DOWN:
+    case SAPP_EVENTTYPE_MOUSE_MOVE:
+    case SAPP_EVENTTYPE_MOUSE_UP:
+        state.ui.last_mouse = mouse_pos;
     default: {}
     }
 }
@@ -1279,7 +1399,7 @@ static void frame(void) {
         sprintf(buf, "%d FPS", (int)roundf(1.0f / sapp_frame_duration()));
         write_text(&wtr, sapp_widthf() - 90.0f, sapp_heightf(), buf, Color_White);
 
-        write_frame(&wtr);
+        write_ui(&wtr);
 
         for (int i = 0; i < sizeof(state.dmg_lbls) / sizeof(state.dmg_lbls[0]); i++) {
             DmgLbl *dl = state.dmg_lbls + i;
