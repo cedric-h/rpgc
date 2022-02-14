@@ -225,6 +225,7 @@ typedef struct {
 } DmgLbl;
 
 typedef enum {
+    UiBoxLooks_NONE, /* UiBoxes with this Look will be skipped */
     UiBoxLooks_Frame,
     UiBoxLooks_Slot,
 } UiBoxLooks;
@@ -234,9 +235,12 @@ struct UiBox {
     UiBox *parent, *next;
     UiBoxLooks looks;
     Vec2 pos, size; /* pos = top left */
+
+    EntItem item; /* hmm */
 };
+#define UI_BOX_COUNT (1 << 5)
 typedef struct {
-    UiBox boxes[1 << 5];
+    UiBox boxes[UI_BOX_COUNT];
     UiBox *grabbed, *root;
     Vec2 last_mouse;
 } UiState;
@@ -269,7 +273,10 @@ static struct {
 } state;
 #define ENT_MAX (sizeof(state.ents) / sizeof(state.ents[0]))
 
+/* appropriating ECS terminology here.
+ * a SYSTEM is just something that iterates over all entities. */
 #define SYSTEM(e) for (Ent *e = state.ents; (e - state.ents) < ENT_MAX; e++) if (e->active)
+#define UI_SYSTEM(b) for (UiBox *b = state.ui.boxes; (b - state.ui.boxes) < UI_BOX_COUNT; b++) if (b->looks) 
 static Ent *ent_alloc(void) {
     for (int i = 0; i < ENT_MAX; i++)
         if (!state.ents[i].active) {
@@ -410,6 +417,7 @@ stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
 
 #define PALETTE \
     X(Color_White,        1.00f, 1.00f, 1.00f, 1.00f) \
+    X(Color_Beige,        0.72f, 0.64f, 0.53f, 1.00f) \
     X(Color_Brown,        0.50f, 0.42f, 0.31f, 1.00f) \
     X(Color_DarkBrown,    0.30f, 0.25f, 0.18f, 1.00f) \
     X(Color_Blue,         0.00f, 0.47f, 0.95f, 1.00f) \
@@ -836,6 +844,16 @@ static void write_corner(GeoWtr *wtr, float x, float y, float mx, float my, Colo
     write_line(wtr, x+11.2f*mx, y+16.0f*my, x+52.0f*mx, y+16.0f*my, 16.0f, clr, z);
 }
 
+static void write_item(GeoWtr *wtr, float rot, Vec2 pos, Ent *ent, float z) {
+    switch (ent->item) {
+    case EntItem_Sword: write_sword(wtr, rot, pos.x, pos.y, z);      break;
+    case EntItem_Bow:   write_bow  (wtr, rot, pos.x, pos.y, z, ent); break;
+    case EntItem_None:
+    case EntItem_COUNT:
+        break;
+    }
+}
+
 static void write_frame(GeoWtr *wtr, float x, float y, float w, float h) {
     float z = 0.0f;
     float w2 = w / 2.0f;
@@ -898,11 +916,24 @@ static size_t write_map(Geo *geo) {
 #undef map
 
 static void ui_init(void) {
-    state.ui.boxes[0] = (UiBox) {
+    UiBox *inventory, *last_slot;
+    *(inventory = state.ui.boxes + 0) = (UiBox) {
         .looks = UiBoxLooks_Frame,
         .pos = vec2(sapp_widthf()/2.0f - 128.0f, sapp_heightf()/2.0f - 128.0f),
         .size = vec2(440.0f, 256.0f),
     };
+    for (int i = 0; i < 2; i++) {
+        UiBox *slot_b4 = last_slot;
+        *(last_slot = state.ui.boxes + i + 1) = (UiBox) {
+            .looks = UiBoxLooks_Slot,
+            .pos = mul2f(inventory->size, 0.5f),
+            .size = vec2(30.0f, 30.0f),
+            .parent = inventory,
+            .item = i ? EntItem_Bow : EntItem_Sword,
+        };
+        last_slot->pos.x += 70.0f * i;
+    }
+    inventory->next = last_slot;
     state.ui.root = state.ui.boxes;
 }
 
@@ -1039,50 +1070,60 @@ static int ent_swing(Ent *e, Vec2 toward) {
 }
 
 static UiBox *ui_box_at_pos(Vec2 pos) {
-    UiBox *base = state.ui.root;
-
-    while (1) {
-        float max_x = base->pos.x + base->size.x,
-              min_x = base->pos.x,
-              max_y = base->pos.y + base->size.y,
-              min_y = base->pos.y;
+    UI_SYSTEM(box) {
+        float max_x = box->pos.x + box->size.x,
+              min_x = box->pos.x,
+              max_y = box->pos.y + box->size.y,
+              min_y = box->pos.y;
         if (pos.x > min_x && pos.x < max_x &&
             pos.y > min_y && pos.y < max_y) {
-            return base;
+            return box;
         }
-
-        UiBox *next;
-             if ((next = base->next));
-        else if (base->parent && (next = base->parent->next));
-        else return NULL;
-        base = next;
     }
+    return NULL;
+}
+
+static Vec2 ui_box_pos(UiBox *box) {
+    Vec2 ret = box->pos;
+    if (box->parent) ret = add2(ret, ui_box_pos(box->parent));
+    return ret;
 }
 
 static void write_ui(GeoWtr *wtr) {
-    UiBox *base = state.ui.root;
-
-    while (1) {
-        switch (base->looks) {
-        case(UiBoxLooks_Frame): {
-            float x = base->pos.x;
-            float y = base->pos.y;
-            float w = base->size.x;
-            float h = base->size.y;
-            write_frame(wtr, x, y, w, h);
+    UI_SYSTEM(box) {
+        Vec2 pos = ui_box_pos(box);
+        switch (box->looks) {
+        case UiBoxLooks_NONE: { } break;
+        case UiBoxLooks_Frame: {
+            float w = box->size.x;
+            float h = box->size.y;
+            write_frame(wtr, pos.x, pos.y, w, h);
 
             char *msg = "sup nerds";
-            x += w / 2.0f, y += h / 2.0f;
+            float x = pos.x + w / 2.0f,
+                  y = pos.y + h / 2.0f;
             write_text(wtr, x - 70.0f, y + 100.0f, msg, Color_White);
         } break;
-        case(UiBoxLooks_Slot):  { } break;
-        }
+        case UiBoxLooks_Slot: {
+            float size = (box->size.x + box->size.y) / 2.0f;
+            Vec2 bg = add2(pos, vec2(2.0f, -5.0f));
+            write_circ(wtr,  bg.x,  bg.y, size, Color_Brown, 0.0f);
+            write_circ(wtr, pos.x, pos.y, size, Color_Beige, 0.0f);
 
-        UiBox *next;
-             if ((next = base->next));
-        else if (base->parent && (next = base->parent->next));
-        else return;
-        base = next;
+            Vert *vert0 = wtr->vert;
+            Ent ent = { .item = box->item };
+            write_item(wtr, M_2_PI, (Vec2){0}, &ent, 0.0f);
+
+            float scale = 30.0f;
+            Vec2 offset = { 16.0f, 16.0f };
+            if (box->item == EntItem_Bow)
+                scale = 25.0f,
+                offset = mul2f(offset, 0.015f);
+            for (Vert *i = vert0; i < wtr->vert; i++)
+                i->x =  i->x * scale + pos.x + offset.x,
+                i->y =  i->y * scale + pos.y - offset.y;
+        } break;
+        }
     }
 }
 
@@ -1146,6 +1187,7 @@ static void event(const sapp_event *ev) {
     game_event(ev);
 
 CAPTURE:
+    /* note: this runs every frame whether UI captures or not */
     switch (ev->type) {
     case SAPP_EVENTTYPE_MOUSE_DOWN:
     case SAPP_EVENTTYPE_MOUSE_MOVE:
@@ -1332,7 +1374,7 @@ static void tick(void) {
             /* by moving forward we'd hit a thing, if we're an arrow that means damage */
             if (e->pointy && closest_ent) {
                 if (ent_damage(closest_ent, e))
-                    closest_ent->vel = add2(closest_ent->vel, mul2f(e->vel, 0.2f));
+                    closest_ent->vel = add2(closest_ent->vel, mul2f(e->vel, 0.4f));
                 ent_free(e);
                 return;
             }
@@ -1384,13 +1426,10 @@ static void frame(void) {
         }
 
         if (e->item) {
-            float item_rot;
-            Vec2 item_pos;
-            ent_item_transform(e, &item_rot, &item_pos, NULL);
-            if (e->item == EntItem_Sword)
-              write_sword(&wtr, item_rot, item_pos.x, item_pos.y, item_pos.y - 1.0f);
-            if (e->item == EntItem_Bow)
-              write_bow  (&wtr, item_rot, item_pos.x, item_pos.y, item_pos.y - 1.0f, e);
+            float im_rot;
+            Vec2 im_pos;
+            ent_item_transform(e, &im_rot, &im_pos, NULL);
+            write_item(&wtr, im_rot, im_pos, e, im_pos.y - 1.0f);
         }
 
         geo_find_z_range(state.dyn_geo.verts, wtr.vert);
@@ -1454,6 +1493,6 @@ sapp_desc sokol_main(int argc, char* argv[]) {
         .gl_force_gles2 = true,
         .window_title = "rpgc",
         .icon.sokol_default = true,
-        .sample_count = 4,
+        .sample_count = 8,
     };
 }
