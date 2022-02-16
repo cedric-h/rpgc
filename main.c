@@ -923,7 +923,6 @@ static void ui_init(void) {
         .size = vec2(440.0f, 256.0f),
     };
     for (int i = 0; i < 2; i++) {
-        UiBox *slot_b4 = last_slot;
         *(last_slot = state.ui.boxes + i + 1) = (UiBox) {
             .looks = UiBoxLooks_Slot,
             .pos = mul2f(inventory->size, 0.5f),
@@ -1115,7 +1114,7 @@ static void write_ui(GeoWtr *wtr) {
             write_item(wtr, M_2_PI, (Vec2){0}, &ent, 0.0f);
 
             float scale = 30.0f;
-            Vec2 offset = { 16.0f, 16.0f };
+            Vec2 offset = {{ 16.0f, 16.0f }};
             if (box->item == EntItem_Bow)
                 scale = 25.0f,
                 offset = mul2f(offset, 0.015f);
@@ -1158,7 +1157,7 @@ static void game_event(const sapp_event *ev) {
 
 /* ui gatekeeps events from the game */
 static void event(const sapp_event *ev) {
-    Vec2 mouse_pos = vec2(ev->mouse_x, ev->mouse_y);
+    Vec2 mouse_pos = vec2(ev->mouse_x, -ev->mouse_y);
 
     switch (ev->type) {
     case SAPP_EVENTTYPE_MOUSE_DOWN: {
@@ -1170,8 +1169,9 @@ static void event(const sapp_event *ev) {
     } break;
     case SAPP_EVENTTYPE_MOUSE_MOVE: {
         if (state.ui.grabbed) {
-            state.ui.grabbed->pos.x += mouse_pos.x - state.ui.last_mouse.x;
-            state.ui.grabbed->pos.y += state.ui.last_mouse.y - mouse_pos.y;
+            // state.ui.grabbed->pos.x += mouse_pos.x - state.ui.last_mouse.x;
+            // state.ui.grabbed->pos.y += state.ui.last_mouse.y - mouse_pos.y;
+            state.ui.grabbed->pos = mouse_pos;
             goto CAPTURE;
         }
     } break;
