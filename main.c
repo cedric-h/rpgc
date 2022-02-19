@@ -1157,7 +1157,7 @@ static void game_event(const sapp_event *ev) {
 
 /* ui gatekeeps events from the game */
 static void event(const sapp_event *ev) {
-    Vec2 mouse_pos = vec2(ev->mouse_x, -ev->mouse_y);
+    Vec2 mouse_pos = vec2(ev->mouse_x, sapp_heightf()-ev->mouse_y);
 
     switch (ev->type) {
     case SAPP_EVENTTYPE_MOUSE_DOWN: {
@@ -1169,9 +1169,9 @@ static void event(const sapp_event *ev) {
     } break;
     case SAPP_EVENTTYPE_MOUSE_MOVE: {
         if (state.ui.grabbed) {
-            // state.ui.grabbed->pos.x += mouse_pos.x - state.ui.last_mouse.x;
-            // state.ui.grabbed->pos.y += state.ui.last_mouse.y - mouse_pos.y;
-            state.ui.grabbed->pos = mouse_pos;
+            state.ui.grabbed->pos.x += mouse_pos.x - state.ui.last_mouse.x;
+            state.ui.grabbed->pos.y += mouse_pos.y - state.ui.last_mouse.y;
+            // state.ui.grabbed->pos = mouse_pos;
             goto CAPTURE;
         }
     } break;
