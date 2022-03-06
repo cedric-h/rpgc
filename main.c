@@ -78,15 +78,15 @@ static Mat4 ortho4x4(float left, float right, float bottom, float top, float nea
 
 typedef struct { float arr[4]; } Vec4;
 static Vec4 mul4x44(Mat4 m, Vec4 v) {
-  Vec4 res;
-  for(int x = 0; x < 4; ++x) {
-    float sum = 0;
-    for(int y = 0; y < 4; ++y)
-      sum += m.arr[y][x] * v.arr[y];
+    Vec4 res;
+    for(int x = 0; x < 4; ++x) {
+        float sum = 0;
+        for(int y = 0; y < 4; ++y)
+            sum += m.arr[y][x] * v.arr[y];
 
-    res.arr[x] = sum;
-  }
-  return res;
+        res.arr[x] = sum;
+    }
+    return res;
 }
 
 
@@ -228,12 +228,22 @@ typedef enum {
     UiBoxLooks_NONE, /* UiBoxes with this Look will be skipped */
     UiBoxLooks_Frame,
     UiBoxLooks_Slot,
+    UiBoxLooks_Item,
 } UiBoxLooks;
+
+typedef enum {
+    UiBoxProp_CanDrag  = (1 << 1),
+    UiBoxProp_DragZone = (1 << 2), /* track when something lifted off of you */
+    UiBoxProp_DropZone = (1 << 3), /* track when something dropped onto you */
+    UiBoxProp_LockDrop = (1 << 4), /* lock your movement to relevant zones */
+} UiBoxProp;
 
 typedef struct UiBox UiBox;
 struct UiBox {
-    UiBox *parent, *next;
+    UiBoxProp props;
     UiBoxLooks looks;
+
+    UiBox *parent; /* only "position me relative to this" */
     Vec2 pos, size; /* pos = top left */
 
     EntItem item; /* hmm */
@@ -241,7 +251,7 @@ struct UiBox {
 #define UI_BOX_COUNT (1 << 5)
 typedef struct {
     UiBox boxes[UI_BOX_COUNT];
-    UiBox *grabbed, *root;
+    UiBox *grabbed, *root, *drag_start_box;
     Vec2 last_mouse;
 } UiState;
 
@@ -416,26 +426,29 @@ static void waffle_update(Waffle *waffle) {
 stbtt_bakedchar cdata[96]; // ASCII 32..126 is 95 glyphs
 
 #define PALETTE \
-    X(Color_White,        1.00f, 1.00f, 1.00f, 1.00f) \
-    X(Color_Beige,        0.72f, 0.64f, 0.53f, 1.00f) \
-    X(Color_Brown,        0.50f, 0.42f, 0.31f, 1.00f) \
-    X(Color_DarkBrown,    0.30f, 0.25f, 0.18f, 1.00f) \
-    X(Color_Blue,         0.00f, 0.47f, 0.95f, 1.00f) \
-    X(Color_Red,          0.90f, 0.16f, 0.22f, 1.00f) \
-    X(Color_Maroon,       0.75f, 0.13f, 0.22f, 1.00f) \
-    X(Color_DarkMaroon,   0.55f, 0.03f, 0.12f, 1.00f) \
-    X(Color_Green,        0.00f, 0.89f, 0.19f, 1.00f) \
-    X(Color_LightGrey,    0.78f, 0.78f, 0.78f, 1.00f) \
-    X(Color_LightishGrey, 0.68f, 0.68f, 0.68f, 1.00f) \
-    X(Color_Grey,         0.51f, 0.51f, 0.51f, 1.00f) \
-    X(Color_DarkGrey,     0.31f, 0.31f, 0.31f, 1.00f) \
-    X(Color_Yellow,       0.99f, 0.98f, 0.00f, 1.00f) \
-    X(Color_ForestShadow, 0.18f, 0.43f, 0.36f, 1.00f) \
-    X(Color_TreeBorder,   0.00f, 0.42f, 0.13f, 1.00f) \
-    X(Color_TreeGreen,    0.00f, 0.46f, 0.17f, 1.00f) \
-    X(Color_TreeGreen1,   0.04f, 0.50f, 0.21f, 1.00f) \
-    X(Color_TreeGreen2,   0.08f, 0.54f, 0.25f, 1.00f) \
-    X(Color_TreeGreen3,   0.12f, 0.58f, 0.29f, 1.00f) \
+    X(Color_White,         1.00f, 1.00f, 1.00f, 1.00f) \
+    X(Color_Beige,         0.72f, 0.64f, 0.53f, 1.00f) \
+    X(Color_Brown,         0.50f, 0.42f, 0.31f, 1.00f) \
+    X(Color_DarkBrown,     0.30f, 0.25f, 0.18f, 1.00f) \
+    X(Color_DarkerBrown,   0.25f, 0.20f, 0.13f, 1.00f) \
+    X(Color_Blue,          0.00f, 0.47f, 0.95f, 1.00f) \
+    X(Color_Red,           0.90f, 0.16f, 0.22f, 1.00f) \
+    X(Color_Maroon,        0.75f, 0.13f, 0.22f, 1.00f) \
+    X(Color_DarkMaroon,    0.55f, 0.03f, 0.12f, 1.00f) \
+    X(Color_Green,         0.00f, 0.89f, 0.19f, 1.00f) \
+    X(Color_LightGrey,     0.78f, 0.78f, 0.78f, 1.00f) \
+    X(Color_LightishGrey,  0.68f, 0.68f, 0.68f, 1.00f) \
+    X(Color_Grey,          0.51f, 0.51f, 0.51f, 1.00f) \
+    X(Color_DarkGrey,      0.31f, 0.31f, 0.31f, 1.00f) \
+    X(Color_Yellow,        0.99f, 0.98f, 0.00f, 1.00f) \
+    X(Color_SlotColor,     0.42f, 0.40f, 0.39f, 1.00f) \
+    X(Color_DarkSlotColor, 0.32f, 0.30f, 0.29f, 1.00f) \
+    X(Color_ForestShadow,  0.18f, 0.43f, 0.36f, 1.00f) \
+    X(Color_TreeBorder,    0.00f, 0.42f, 0.13f, 1.00f) \
+    X(Color_TreeGreen,     0.00f, 0.46f, 0.17f, 1.00f) \
+    X(Color_TreeGreen1,    0.04f, 0.50f, 0.21f, 1.00f) \
+    X(Color_TreeGreen2,    0.08f, 0.54f, 0.25f, 1.00f) \
+    X(Color_TreeGreen3,    0.12f, 0.58f, 0.29f, 1.00f) \
 
 #define X(name, r, g, b, a) name,
 typedef enum { PALETTE } Color;
@@ -855,12 +868,17 @@ static void write_item(GeoWtr *wtr, float rot, Vec2 pos, Ent *ent, float z) {
 }
 
 static void write_frame(GeoWtr *wtr, float x, float y, float w, float h) {
+#define GAP (3.36f)
+#define PULL (-1.00f)
+    x += 32.0f;
+    y += 32.0f;
+    w -= 64.0f;
+    h -= 64.0f;
+
     float z = 0.0f;
     float w2 = w / 2.0f;
     float h2 = h / 2.0f;
     x += w2, y += h2;
-#define GAP (3.36f)
-#define PULL (-1.00f)
 
     write_rect(wtr, x, y - 8.0f - h2, w + 16.0f, h + 16.0f, Color_DarkBrown, z);
 
@@ -916,23 +934,55 @@ static size_t write_map(Geo *geo) {
 #undef map
 
 static void ui_init(void) {
-    UiBox *inventory, *last_slot;
-    *(inventory = state.ui.boxes + 0) = (UiBox) {
+    UiBox *inventory, *wtr = state.ui.boxes;
+    *(inventory = wtr++) = (UiBox) {
         .looks = UiBoxLooks_Frame,
+        .props = UiBoxProp_CanDrag,
         .pos = vec2(sapp_widthf()/2.0f - 128.0f, sapp_heightf()/2.0f - 128.0f),
-        .size = vec2(440.0f, 256.0f),
+        .size = vec2(504.0f, 320.0f),
     };
-    for (int i = 0; i < 2; i++) {
-        *(last_slot = state.ui.boxes + i + 1) = (UiBox) {
-            .looks = UiBoxLooks_Slot,
-            .pos = mul2f(inventory->size, 0.5f),
-            .size = vec2(30.0f, 30.0f),
-            .parent = inventory,
-            .item = i ? EntItem_Bow : EntItem_Sword,
-        };
-        last_slot->pos.x += 70.0f * i;
+
+    typedef struct { Vec2 pos, size; } UiBoxGrid;
+    UiBoxGrid grid = {
+        .pos = mul2(inventory->size, vec2(0.5f, 0.45f)),
+        .size = vec2(inventory->size.x / 2.0f, inventory->size.y),
+    };
+
+    Vec2 slot_poses[8] = {0};
+    Vec2 *slot_pos_wtr = slot_poses;
+    for (int i = 0; i < 6; i++) {
+        int w = (int)floorf(grid.size.x / 70.0f);
+        *slot_pos_wtr++ = vec2(
+            grid.pos.x + i % w * 70.0f,
+            grid.pos.y - i / w * 70.0f
+        );
     }
-    inventory->next = last_slot;
+    *slot_pos_wtr++ = vec2(100.0f, 55.0f);
+
+    for (Vec2 *p = slot_poses; p != slot_pos_wtr; p++) {
+        UiBox *slot = wtr++;
+        slot->pos = *p;
+        slot->size = vec2(60.0f, 60.0f);
+        slot->props = UiBoxProp_DropZone | UiBoxProp_DragZone;
+        slot->looks = UiBoxLooks_Slot;
+        slot->parent = inventory;
+    }
+
+    UiBox *item_holder = wtr++;
+    *item_holder = (UiBox) {
+        .size = inventory->size,
+        .parent = inventory,
+    };
+    for (Vec2 *p = slot_poses; p != slot_pos_wtr; p++) {
+        UiBox *item = wtr++;
+        item->pos = *p;
+        item->size = vec2(60.0f, 60.0f);
+        item->props = UiBoxProp_CanDrag | UiBoxProp_LockDrop;
+        item->parent = item_holder;
+        item->looks = UiBoxLooks_Item;
+        item->item = ((p - slot_poses) % 2) ? EntItem_Bow : EntItem_Sword;
+    }
+
     state.ui.root = state.ui.boxes;
 }
 
@@ -1068,168 +1118,6 @@ static int ent_swing(Ent *e, Vec2 toward) {
     return can_swing;
 }
 
-static UiBox *ui_box_at_pos(Vec2 pos) {
-    UI_SYSTEM(box) {
-        float max_x = box->pos.x + box->size.x,
-              min_x = box->pos.x,
-              max_y = box->pos.y + box->size.y,
-              min_y = box->pos.y;
-        if (pos.x > min_x && pos.x < max_x &&
-            pos.y > min_y && pos.y < max_y) {
-            return box;
-        }
-    }
-    return NULL;
-}
-
-static Vec2 ui_box_pos(UiBox *box) {
-    Vec2 ret = box->pos;
-    if (box->parent) ret = add2(ret, ui_box_pos(box->parent));
-    return ret;
-}
-
-static void write_ui(GeoWtr *wtr) {
-    UI_SYSTEM(box) {
-        Vec2 pos = ui_box_pos(box);
-        switch (box->looks) {
-        case UiBoxLooks_NONE: { } break;
-        case UiBoxLooks_Frame: {
-            float w = box->size.x;
-            float h = box->size.y;
-            write_frame(wtr, pos.x, pos.y, w, h);
-
-            char *msg = "sup nerds";
-            float x = pos.x + w / 2.0f,
-                  y = pos.y + h / 2.0f;
-            write_text(wtr, x - 70.0f, y + 100.0f, msg, Color_White);
-        } break;
-        case UiBoxLooks_Slot: {
-            float size = (box->size.x + box->size.y) / 2.0f;
-            Vec2 bg = add2(pos, vec2(2.0f, -5.0f));
-            write_circ(wtr,  bg.x,  bg.y, size, Color_Brown, 0.0f);
-            write_circ(wtr, pos.x, pos.y, size, Color_Beige, 0.0f);
-
-            Vert *vert0 = wtr->vert;
-            Ent ent = { .item = box->item };
-            write_item(wtr, M_2_PI, (Vec2){0}, &ent, 0.0f);
-
-            float scale = 30.0f;
-            Vec2 offset = {{ 16.0f, 16.0f }};
-            if (box->item == EntItem_Bow)
-                scale = 25.0f,
-                offset = mul2f(offset, 0.015f);
-            for (Vert *i = vert0; i < wtr->vert; i++)
-                i->x =  i->x * scale + pos.x + offset.x,
-                i->y =  i->y * scale + pos.y - offset.y;
-        } break;
-        }
-    }
-}
-
-static void game_event(const sapp_event *ev) {
-    switch (ev->type) {
-    case SAPP_EVENTTYPE_KEY_UP:
-    case SAPP_EVENTTYPE_KEY_DOWN: {
-        state.keys[ev->key_code] = ev->type == SAPP_EVENTTYPE_KEY_DOWN;
-        if (ev->key_code == SAPP_KEYCODE_ESCAPE)
-            sapp_request_quit();
-        else if (ev->key_code == SAPP_KEYCODE_SPACE) {
-            if (ev->type == SAPP_EVENTTYPE_KEY_UP && state.aimer.active) {
-                if (ent_swing(state.player, norm2(state.aimer.pos)))
-                    state.aimer.active = 0;
-            } else if (!state.aimer.active && state.tick > state.player->swing.end) {
-                state.aimer.active = 1,
-                state.aimer.pos = vec2(0.0f, 0.0f);
-            }
-        }
-    } break;
-    case SAPP_EVENTTYPE_MOUSE_DOWN: {
-        Vec2 cam = state.cam;
-        float ar = sapp_widthf() / sapp_heightf(); /* aspect ratio */
-        float x = -(1.0f - ev->mouse_x / sapp_widthf()  * 2.0f) * GAME_SCALE        + cam.x;
-        float y =  (1.0f - ev->mouse_y / sapp_heightf() * 2.0f) * (GAME_SCALE / ar) + cam.y;
-        if (state.tick > state.player->swing.end)
-            ent_swing(state.player, norm2(sub2(vec2(x, y), state.player->pos)));
-    } break;
-    default: {}
-    }
-}
-
-/* ui gatekeeps events from the game */
-static void event(const sapp_event *ev) {
-    Vec2 mouse_pos = vec2(ev->mouse_x, sapp_heightf()-ev->mouse_y);
-
-    switch (ev->type) {
-    case SAPP_EVENTTYPE_MOUSE_DOWN: {
-        UiBox *hovered = ui_box_at_pos(mouse_pos);
-        if (hovered) {
-            state.ui.grabbed = hovered;
-            goto CAPTURE;
-        }
-    } break;
-    case SAPP_EVENTTYPE_MOUSE_MOVE: {
-        if (state.ui.grabbed) {
-            state.ui.grabbed->pos.x += mouse_pos.x - state.ui.last_mouse.x;
-            state.ui.grabbed->pos.y += mouse_pos.y - state.ui.last_mouse.y;
-            // state.ui.grabbed->pos = mouse_pos;
-            goto CAPTURE;
-        }
-    } break;
-    case SAPP_EVENTTYPE_MOUSE_UP: {
-        if (state.ui.grabbed) {
-            state.ui.grabbed = NULL;
-            goto CAPTURE;
-        }
-    } break;
-    default: {}
-    }
-
-    game_event(ev);
-
-CAPTURE:
-    /* note: this runs every frame whether UI captures or not */
-    switch (ev->type) {
-    case SAPP_EVENTTYPE_MOUSE_DOWN:
-    case SAPP_EVENTTYPE_MOUSE_MOVE:
-    case SAPP_EVENTTYPE_MOUSE_UP:
-        state.ui.last_mouse = mouse_pos;
-    default: {}
-    }
-}
-
-unsigned int positive_inf = 0x7F800000; // 0xFF << 23
-#define POS_INF_F (*(float *)&positive_inf)
-static float scene_distance(Vec2 p, Ent *exclude, EntMask hit_mask, Ent **ent) {
-    float dist = POS_INF_F;
-
-    SYSTEM(e) {
-        if (!(e->has_mask & hit_mask)) continue;
-        if (e == exclude) continue;
-
-        float this_dist = dist2(p, e->pos) - e->radius;
-        if (this_dist < dist) {
-            dist = this_dist;
-            if (ent) *ent = e;
-        }
-    }
-    return dist;
-}
-
-static float raymarch(Vec2 origin, Vec2 dir, Ent *exclude, EntMask hit_mask, Ent **hit) {
-    float t = 0.0f;
-    for (int iter = 0; iter < 5; iter++) {
-        float d = scene_distance(add2(origin, mul2f(dir, t)), exclude, hit_mask, hit);
-        if (d == POS_INF_F) return d;
-        if (d < 0.01f) return t;
-        t += d;
-    }
-    return t;
-}
-
-static float raymarch_ent(Ent *ent, Ent **hit) {
-    return raymarch(ent->pos, ent->vel, ent, ent->hit_mask, hit);
-}
-
 static void ent_item_transform(Ent *e, float *out_rot, Vec2 *out_pos, uint8_t *out_dmg) {
     Vec2 toward = e->swing.toward;
     Vec2 center = vec2(0.0f, 0.5f);
@@ -1308,6 +1196,246 @@ static void ent_item_transform(Ent *e, float *out_rot, Vec2 *out_pos, uint8_t *o
 
     out_pos->x += e->pos.x;
     out_pos->y += e->pos.y;
+}
+
+static Vec2 ui_box_pos(UiBox *box) {
+    Vec2 ret = box->pos;
+    if (box->parent) ret = add2(ret, ui_box_pos(box->parent));
+    return ret;
+}
+
+static bool ui_box_contains_pos(UiBox *box, Vec2 pos) {
+    Vec2 boxpos = ui_box_pos(box);
+    float max_x = boxpos.x + box->size.x,
+          min_x = boxpos.x,
+          max_y = boxpos.y + box->size.y,
+          min_y = boxpos.y;
+    return (pos.x > min_x && pos.x < max_x &&
+            pos.y > min_y && pos.y < max_y);
+}
+
+static UiBox *ui_box_at_pos(Vec2 pos, UiBoxProp mask) {
+    UiBox *ret = NULL;
+    UI_SYSTEM(box) {
+        if (box->props & mask && ui_box_contains_pos(box, pos)) {
+            /* we just uh prioritize boxes with parents because ... meh */
+            if (!ret || box->parent)
+                ret = box;
+        }
+    }
+    return ret;
+}
+
+static void write_ent(GeoWtr *wtr, Ent *e) {
+    switch (e->looks) {
+        case EntLooks_None: break;
+        case EntLooks_Player: {
+            write_rect(wtr, e->pos.x, e->pos.y, 1.0f, 1.0f, Color_Blue, e->pos.y);
+        } break;
+        case EntLooks_Pot: {
+            write_pot(wtr, e->pos.x, e->pos.y, e->radius);
+        } break;
+        case EntLooks_Arrow: {
+            write_arrow(wtr, vec2_rads(e->vel), e->pos.x, e->pos.y, e->pos.y);
+        } break;
+    }
+
+    if (e->item) {
+        float im_rot;
+        Vec2 im_pos;
+        ent_item_transform(e, &im_rot, &im_pos, NULL);
+        write_item(wtr, im_rot, im_pos, e, im_pos.y - 1.0f);
+    }
+}
+
+static void write_ui(GeoWtr *wtr) {
+    UI_SYSTEM(box) {
+        Vec2 pos = ui_box_pos(box);
+        float size = (box->size.x + box->size.y) / 2.0f;
+        float hsize = size / 2.0f;
+
+        switch (box->looks) {
+        case UiBoxLooks_NONE: { } break;
+        case UiBoxLooks_Frame: {
+            float w = box->size.x;
+            float h = box->size.y;
+            write_frame(wtr, pos.x, pos.y, w, h);
+
+            char *msg = "sup nerds";
+            float x = pos.x + w / 2.0f,
+                  y = pos.y + h / 2.0f;
+            write_text(wtr, x - 70.0f, y + 100.0f, msg, Color_White);
+
+
+            Ent player = *state.player;
+            player.pos = (Vec2){0};
+
+            float scale = 40.0f;
+            Vec2 offset = {{ -75.0f, -66.0f }};
+
+            Vert *vert0 = wtr->vert;
+            write_ent(wtr, &player);
+            for (Vert *i = vert0; i < wtr->vert; i++)
+                i->x = i->x * scale + pos.x + offset.x + hsize,
+                i->y = i->y * scale + pos.y + offset.y + hsize,
+                i->z = 0.0f;
+
+        } break;
+        case UiBoxLooks_Slot: {
+            Vec2 bg = add2(pos, vec2(2.0f, -5.0f));
+            write_circ(wtr,  bg.x + hsize,  bg.y + hsize, hsize, Color_DarkerBrown, 0.0f);
+            write_circ(wtr, pos.x + hsize, pos.y + hsize, hsize, Color_SlotColor, 0.0f);
+        } break;
+        case UiBoxLooks_Item: {
+            float scale = 30.0f;
+            Vec2 offset = {{ 16.0f, 16.0f }};
+            if (box->item == EntItem_Sword)
+                offset = mul2(offset, vec2(-0.9f, -1.2f));
+            if (box->item == EntItem_Bow)
+                scale = 25.0f,
+                offset = mul2f(offset, 0.02f);
+
+            Ent ent = { .item = box->item };
+
+            Vert *vert0 = wtr->vert;
+            write_item(wtr, -M_2_PI, (Vec2){0}, &ent, 0.0f);
+            for (Vert *i = vert0; i < wtr->vert; i++)
+                i->x =  i->x * scale + pos.x + offset.x + hsize + 2,
+                i->y =  i->y * scale + pos.y + offset.y + hsize - 2,
+                i->color = Color_DarkSlotColor;
+
+            vert0 = wtr->vert;
+            write_item(wtr, -M_2_PI, (Vec2){0}, &ent, 0.0f);
+            for (Vert *i = vert0; i < wtr->vert; i++)
+                i->x =  i->x * scale + pos.x + offset.x + hsize,
+                i->y =  i->y * scale + pos.y + offset.y + hsize;
+        } break;
+        }
+    }
+}
+
+static void game_event(const sapp_event *ev) {
+    switch (ev->type) {
+    case SAPP_EVENTTYPE_KEY_UP:
+    case SAPP_EVENTTYPE_KEY_DOWN: {
+        state.keys[ev->key_code] = ev->type == SAPP_EVENTTYPE_KEY_DOWN;
+        if (ev->key_code == SAPP_KEYCODE_ESCAPE)
+            sapp_request_quit();
+        else if (ev->key_code == SAPP_KEYCODE_SPACE) {
+            if (ev->type == SAPP_EVENTTYPE_KEY_UP && state.aimer.active) {
+                if (ent_swing(state.player, norm2(state.aimer.pos)))
+                    state.aimer.active = 0;
+            } else if (!state.aimer.active && state.tick > state.player->swing.end) {
+                state.aimer.active = 1,
+                state.aimer.pos = vec2(0.0f, 0.0f);
+            }
+        }
+    } break;
+    case SAPP_EVENTTYPE_MOUSE_DOWN: {
+        Vec2 cam = state.cam;
+        float ar = sapp_widthf() / sapp_heightf(); /* aspect ratio */
+        float x = -(1.0f - ev->mouse_x / sapp_widthf()  * 2.0f) * GAME_SCALE        + cam.x;
+        float y =  (1.0f - ev->mouse_y / sapp_heightf() * 2.0f) * (GAME_SCALE / ar) + cam.y;
+        if (state.tick > state.player->swing.end)
+            ent_swing(state.player, norm2(sub2(vec2(x, y), state.player->pos)));
+    } break;
+    default: {}
+    }
+}
+
+/* ui gatekeeps events from the game */
+static void event(const sapp_event *ev) {
+    Vec2 mouse_pos = vec2(ev->mouse_x, sapp_heightf() - ev->mouse_y);
+
+    switch (ev->type) {
+    case SAPP_EVENTTYPE_MOUSE_DOWN: {
+        UiBox *hovered = ui_box_at_pos(mouse_pos, UiBoxProp_CanDrag);
+        UiBox *drag_start = ui_box_at_pos(mouse_pos, UiBoxProp_DragZone);
+
+        if (hovered) {
+            if (drag_start) state.ui.drag_start_box = drag_start;
+            state.ui.grabbed = hovered;
+            goto CAPTURE;
+        }
+    } break;
+    case SAPP_EVENTTYPE_MOUSE_MOVE: {
+        if (state.ui.grabbed) {
+            state.ui.grabbed->pos.x += mouse_pos.x - state.ui.last_mouse.x;
+            state.ui.grabbed->pos.y += mouse_pos.y - state.ui.last_mouse.y;
+            // state.ui.grabbed->pos = mouse_pos;
+            goto CAPTURE;
+        }
+    } break;
+    case SAPP_EVENTTYPE_MOUSE_UP: {
+        if (state.ui.grabbed) {
+            if (state.ui.grabbed->props & UiBoxProp_LockDrop) {
+                UiBox *drop_zone = ui_box_at_pos(mouse_pos, UiBoxProp_DropZone);
+
+                if (drop_zone) {
+                    /* see if there's another LockDrop at this pos that != us */
+                    state.ui.grabbed->props &= ~UiBoxProp_LockDrop;
+                    UiBox *other = ui_box_at_pos(mouse_pos, UiBoxProp_LockDrop);
+                    state.ui.grabbed->props |= UiBoxProp_LockDrop;
+
+                    if (other) other->pos = state.ui.drag_start_box->pos;
+
+                    state.ui.grabbed->pos = drop_zone->pos;
+                } else if (state.ui.drag_start_box) {
+                    state.ui.grabbed->pos = state.ui.drag_start_box->pos;
+                }
+            }
+
+            state.ui.grabbed = NULL;
+            goto CAPTURE;
+        }
+    } break;
+    default: {}
+    }
+
+    game_event(ev);
+
+CAPTURE:
+    /* note: this runs every frame whether UI captures or not */
+    switch (ev->type) {
+    case SAPP_EVENTTYPE_MOUSE_DOWN:
+    case SAPP_EVENTTYPE_MOUSE_MOVE:
+    case SAPP_EVENTTYPE_MOUSE_UP:
+        state.ui.last_mouse = mouse_pos;
+    default: {}
+    }
+}
+
+unsigned int positive_inf = 0x7F800000; // 0xFF << 23
+#define POS_INF_F (*(float *)&positive_inf)
+static float scene_distance(Vec2 p, Ent *exclude, EntMask hit_mask, Ent **ent) {
+    float dist = POS_INF_F;
+
+    SYSTEM(e) {
+        if (!(e->has_mask & hit_mask)) continue;
+        if (e == exclude) continue;
+
+        float this_dist = dist2(p, e->pos) - e->radius;
+        if (this_dist < dist) {
+            dist = this_dist;
+            if (ent) *ent = e;
+        }
+    }
+    return dist;
+}
+
+static float raymarch(Vec2 origin, Vec2 dir, Ent *exclude, EntMask hit_mask, Ent **hit) {
+    float t = 0.0f;
+    for (int iter = 0; iter < 5; iter++) {
+        float d = scene_distance(add2(origin, mul2f(dir, t)), exclude, hit_mask, hit);
+        if (d == POS_INF_F) return d;
+        if (d < 0.01f) return t;
+        t += d;
+    }
+    return t;
+}
+
+static float raymarch_ent(Ent *ent, Ent **hit) {
+    return raymarch(ent->pos, ent->vel, ent, ent->hit_mask, hit);
 }
 
 
@@ -1411,28 +1539,7 @@ static void frame(void) {
     }
     SYSTEM(e) {
         if (!e->looks) continue;
-
-        switch (e->looks) {
-            case EntLooks_None: break;
-            case EntLooks_Player: {
-                write_rect(&wtr, e->pos.x, e->pos.y, 1.0f, 1.0f, Color_Blue, e->pos.y);
-            } break;
-            case EntLooks_Pot: {
-                write_pot(&wtr, e->pos.x, e->pos.y, e->radius);
-            } break;
-            case EntLooks_Arrow: {
-                write_arrow(&wtr, vec2_rads(e->vel), e->pos.x, e->pos.y, e->pos.y);
-            } break;
-        }
-
-        if (e->item) {
-            float im_rot;
-            Vec2 im_pos;
-            ent_item_transform(e, &im_rot, &im_pos, NULL);
-            write_item(&wtr, im_rot, im_pos, e, im_pos.y - 1.0f);
-        }
-
-        geo_find_z_range(state.dyn_geo.verts, wtr.vert);
+        write_ent(&wtr, e);
     }
 
     uint16_t *text_start = wtr.idx;
@@ -1458,6 +1565,7 @@ static void frame(void) {
     sg_begin_default_pass(&state.pass_action, sapp_width(), sapp_height());
     sg_apply_pipeline(state.pip);
 
+    geo_find_z_range(state.dyn_geo.verts, wtr.vert);
     vs_params_t vs_params = { .mvp = mvp4x4() };
     sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(vs_params));
 
@@ -1466,7 +1574,6 @@ static void frame(void) {
 
     sg_apply_bindings(&state.dyn_geo.bind);
     sg_draw(0, text_start - state.dyn_geo.idxs, 1);
-
 
     sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(((vs_params_t) {
         .mvp = ortho4x4(0.0f, sapp_widthf(), 0.0f, sapp_heightf(), -1.0f, 1.0f),
