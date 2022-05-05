@@ -251,7 +251,7 @@ struct UiBox {
 #define UI_BOX_COUNT (1 << 5)
 typedef struct {
     UiBox boxes[UI_BOX_COUNT];
-    UiBox *grabbed, *root, *drag_start_box;
+    UiBox *grabbed, *root, *drag_start_box, *player_weapon_slot;
     Vec2 last_mouse;
 } UiState;
 
@@ -948,7 +948,7 @@ static void ui_init(void) {
         .size = vec2(inventory->size.x / 2.0f, inventory->size.y),
     };
 
-    Vec2 slot_poses[8] = {0};
+    Vec2 slot_poses[7] = {0};
     Vec2 *slot_pos_wtr = slot_poses;
     for (int i = 0; i < 6; i++) {
         int w = (int)floorf(grid.size.x / 70.0f);
@@ -957,7 +957,9 @@ static void ui_init(void) {
             grid.pos.y - i / w * 70.0f
         );
     }
+
     *slot_pos_wtr++ = vec2(100.0f, 55.0f);
+    state.ui.player_weapon_slot = wtr + 6;
 
     for (Vec2 *p = slot_poses; p != slot_pos_wtr; p++) {
         UiBox *slot = wtr++;
@@ -980,7 +982,7 @@ static void ui_init(void) {
         item->props = UiBoxProp_CanDrag | UiBoxProp_LockDrop;
         item->parent = item_holder;
         item->looks = UiBoxLooks_Item;
-        item->item = ((p - slot_poses) % 2) ? EntItem_Bow : EntItem_Sword;
+        item->item = ((p - slot_poses) % 2) ? EntItem_Sword : EntItem_Bow;
     }
 
     state.ui.root = state.ui.boxes;
@@ -1380,6 +1382,11 @@ static void event(const sapp_event *ev) {
                     if (other) other->pos = state.ui.drag_start_box->pos;
 
                     state.ui.grabbed->pos = drop_zone->pos;
+
+                    if (state.ui.player_weapon_slot == drop_zone)
+                        state.player->item = state.ui.grabbed->item;
+                    else if (state.ui.player_weapon_slot == state.ui.drag_start_box)
+                        state.player->item = other->item;
                 } else if (state.ui.drag_start_box) {
                     state.ui.grabbed->pos = state.ui.drag_start_box->pos;
                 }

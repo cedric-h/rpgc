@@ -6,6 +6,9 @@ fi
 
 cd build
 
+# print a horizontal line of dashes; helps separate the output if run serially
+printf '%*s\n' "${COLUMNS:-$(tput cols)}" '' | tr ' ' - | lolcat
+
 if [[ $OSTYPE == 'darwin'* ]]; then
   if [[ $(../sokol-tools-bin/bin/osx/sokol-shdc --input ../shaders.glsl --output shaders.glsl.h --slang metal_macos | tee /dev/tty) ]]; then
     exit 1
