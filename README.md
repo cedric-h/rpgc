@@ -1,5 +1,9 @@
+![image](https://github.com/cedric-h/rpgc/assets/25539554/7e685f20-5c93-47f5-92b3-46aae3ef0824)
+![image](https://github.com/cedric-h/rpgc/assets/25539554/c35e5f1b-2596-4293-b766-954d7185e785)
+
+
 # goal
-sup nerds. this is a rewrite in C of [a game i wrote in rust a while ago](https://github.com/cedric-h/rpg). trying to figure out how much smaller C WASM bundles can be in a much more real-world way. also trying to figure out why it is C feels so much more ergonomic to write. figuring out a real world something and figuring out something about myself along the way. dope.
+sup nerds. this is a rewrite in C of [a game i wrote in rust a while ago](https://github.com/cedric-h/rpg).
 
 ## deps
 `sudo apt-get install libgl-dev libx11-dev libxi-dev libxcursor-dev`
